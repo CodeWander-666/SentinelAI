@@ -1,5 +1,5 @@
 """
-Custom exceptions for the application.
+Custom exceptions and error handling utilities.
 """
 
 from typing import Optional
@@ -38,7 +38,12 @@ class UIError(SentinelAIError):
 
 @contextmanager
 def error_context(context: str):
-    """Context manager to log and wrap exceptions."""
+    """
+    Context manager to log and wrap exceptions with context.
+    Example:
+        with error_context("loading trades"):
+            risky_operation()
+    """
     try:
         yield
     except Exception as e:
