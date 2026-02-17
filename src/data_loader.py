@@ -12,28 +12,57 @@ class DataLoader:
             df_t = pd.read_csv(trades_source)
             
             tracker.log("Normalizing Trade Headers...", 15)
+            # 1. Clean Headers
             df_t.columns = [c.strip().lower() for c in df_t.columns]
             
+            # 2. COLLISION AVOIDANCE (The Fix)
+            # We check which columns exist and pick the BEST one to be 'date_dt'
+            # Priority: 'timestamp' (Epoch) > 'timestamp ist' (String)
+            
+            if 'timestamp' in df_t.columns:
+                tracker.log("Detected Precision Timestamp (Epoch). Using primary.", 18)
+                df_t.rename(columns={'timestamp': 'date_dt'}, inplace=True)
+                # Drop conflicting column if it exists
+                if 'timestamp ist' in df_t.columns:
+                    df_t.drop(columns=['timestamp ist'], inplace=True)
+            elif 'timestamp ist' in df_t.columns:
+                tracker.log("Detected Standard Timestamp. Using secondary.", 18)
+                df_t.rename(columns={'timestamp ist': 'date_dt'}, inplace=True)
+            
+            # 3. Rename remaining columns safely
             t_map = {
-                'timestamp ist': 'date_dt', 'timestamp': 'date_dt',
-                'account': 'account', 'closed pnl': 'closedPnL',
-                'size usd': 'size', 'leverage': 'leverage', 'side': 'side'
+                'account': 'account', 
+                'closed pnl': 'closedPnL',
+                'size usd': 'size', 
+                'leverage': 'leverage', 
+                'side': 'side'
             }
+            # Only rename if the column actually exists (avoid key errors)
             df_t.rename(columns=lambda x: t_map.get(x, x), inplace=True)
             
-            # Validate
-            if 'date_dt' not in df_t.columns: raise ValueError("Missing 'Timestamp' in Trades")
-            if 'leverage' not in df_t.columns: df_t['leverage'] = 1.0
+            # Validate Critical Columns
+            if 'date_dt' not in df_t.columns: 
+                raise ValueError(f"CRITICAL: No timestamp column found. Headers: {list(df_t.columns)}")
+            
+            # Self-Heal Leverage
+            if 'leverage' not in df_t.columns: 
+                tracker.log("Missing Leverage column. Injecting defaults.", 20)
+                df_t['leverage'] = 1.0
 
-            # Run Cleaning Suite on Trades
+            # Run Cleaning Suite
             df_t = cleaner.clean_financial_data(df_t)
             
-            # Aggregate Daily (Optimization)
+            # Aggregate Daily
             tracker.log("Aggregating Daily Metrics...", 40)
             df_t['is_win'] = (df_t['closedPnL'] > 0).astype(int)
+            
+            # Group by safely
             df_daily = df_t.groupby(['date_dt', 'account']).agg({
-                'closedPnL': 'sum', 'leverage': 'mean', 'size': 'sum', 
-                'is_win': 'mean', 'side': 'count'
+                'closedPnL': 'sum', 
+                'leverage': 'mean', 
+                'size': 'sum', 
+                'is_win': 'mean', 
+                'side': 'count'
             }).reset_index()
 
             # --- PHASE 2: SENTIMENT (40-60%) ---
@@ -41,10 +70,16 @@ class DataLoader:
             df_s = pd.read_csv(sentiment_source)
             df_s.columns = [c.strip().lower() for c in df_s.columns]
             
-            s_map = {'date': 'date_dt', 'value': 'fng_val', 'classification': 'regime'}
+            # Collision Check for Sentiment too
+            if 'date' in df_s.columns:
+                df_s.rename(columns={'date': 'date_dt'}, inplace=True)
+            elif 'timestamp' in df_s.columns:
+                df_s.rename(columns={'timestamp': 'date_dt'}, inplace=True)
+                
+            s_map = {'value': 'fng_val', 'classification': 'regime'}
             df_s.rename(columns=lambda x: s_map.get(x, x), inplace=True)
             
-            # Basic clean for sentiment
+            # Structural Clean
             df_s['date_dt'] = pd.to_datetime(df_s['date_dt'], errors='coerce')
             df_s = df_s.dropna(subset=['date_dt']).drop_duplicates('date_dt')
 
@@ -63,4 +98,5 @@ class DataLoader:
 
         except Exception as e:
             tracker.log(f"CRITICAL ERROR: {str(e)}", 0)
+            # Re-raise to stop execution flow
             raise e
