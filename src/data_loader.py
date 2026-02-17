@@ -1,7 +1,3 @@
-"""
-HEAVY ARMOR DATA ENGINE (Polars Edition) – with robust date parsing and logging.
-Loads, cleans, and merges sentiment and trades data.
-"""
 import polars as pl
 import pandas as pd
 import logging
@@ -31,7 +27,6 @@ class DataLoader:
         - If col_name suggests string format (e.g., "Timestamp IST"), try that.
         - If that yields too many nulls, fall back to numeric milliseconds, then seconds.
         """
-        # Helper to try numeric parsing (milliseconds first, then seconds)
         def try_numeric(s: pl.Series) -> pl.Series:
             numeric = s.cast(pl.Float64, strict=False)
             # Try milliseconds (assume values are in milliseconds, convert to microseconds)
@@ -41,25 +36,20 @@ class DataLoader:
                 parsed = numeric.cast(pl.Int64).cast(pl.Datetime)
             return parsed
 
-        # Convert to string for logging (only first few)
         sample = series.head(5).to_list()
         logger.info(f"Parsing column '{col_name}' with sample: {sample}")
 
-        # Case 1: likely string format (contains "ist" or explicit name)
         if "ist" in col_name.lower() or col_name == "Timestamp IST":
             str_series = series.cast(pl.String)
             parsed = str_series.str.strptime(pl.Datetime, format="%d-%m-%Y %H:%M", strict=False)
-            # If more than half are null, fallback to numeric
             if parsed.null_count() > len(parsed) / 2:
                 logger.warning(f"String parsing failed for many rows in '{col_name}', trying numeric...")
                 parsed = try_numeric(series)
             return parsed
 
-        # Case 2: likely numeric (e.g., "Timestamp")
         elif col_name.lower() == "timestamp":
             return try_numeric(series)
 
-        # Fallback: try string, then numeric
         else:
             parsed = series.cast(pl.String).str.strptime(pl.Datetime, strict=False)
             if parsed.null_count() > len(parsed) / 2:
@@ -69,12 +59,16 @@ class DataLoader:
     @staticmethod
     def _normalise_columns(df: pl.DataFrame, mapping: dict) -> pl.DataFrame:
         """Rename columns based on mapping (internal: list of possible external)."""
-        current = {col.lower().strip(): col for col in df.columns}
+        # Clean column names: strip any surrounding whitespace/tabs and lower
+        clean_cols = {col.strip(): col for col in df.columns}
         rename = {}
         for internal, aliases in mapping.items():
             for alias in aliases:
-                if alias.lower().strip() in current:
-                    rename[current[alias.lower().strip()]] = internal
+                for col in clean_cols:
+                    if alias.lower() == col.lower().strip():
+                        rename[clean_cols[col]] = internal
+                        break
+                if internal in rename:
                     break
         logger.info(f"Renaming columns: {rename}")
         return df.rename(rename)
@@ -124,11 +118,15 @@ class DataLoader:
     # Private loaders
     # ----------------------------------------------------------------------
     def _load_sentiment(self, source) -> pl.DataFrame:
+        # Try reading with tab separator first (since sentiment CSV is tab-separated)
         try:
-            df = pl.read_csv(source, try_parse_dates=False)
+            df = pl.read_csv(source, separator='\t', try_parse_dates=False)
         except Exception:
-            df = pd.read_csv(source)
-            df = pl.from_pandas(df)
+            try:
+                df = pl.read_csv(source, try_parse_dates=False)  # auto-detect
+            except Exception:
+                df = pd.read_csv(source)
+                df = pl.from_pandas(df)
 
         logger.info(f"Sentiment original columns: {df.columns}")
 
