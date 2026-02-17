@@ -38,7 +38,6 @@ class DataLoader:
         Expected: 'date', 'value', 'classification'
         """
         # 1. Normalize Column Names
-        # Map: {Internal: [Possible Aliases]}
         schema_map = {
             "date_str": ["date", "Date", "timestamp", "Timestamp"],
             "value": ["value", "Value", "fng_value"],
@@ -57,7 +56,6 @@ class DataLoader:
             lf = lf.rename(rename_map)
 
         # 2. Parse Date (Prioritize 'date_str')
-        # Tries YYYY-MM-DD, DD-MM-YYYY, then Epoch Seconds
         lf = lf.with_columns(
             pl.coalesce([
                 pl.col("date_str").str.strptime(pl.Date, "%Y-%m-%d", strict=False),
@@ -76,7 +74,7 @@ class DataLoader:
         # 1. Normalize Column Names
         schema_map = {
             "time_str": ["Timestamp IST", "date", "Date", "time", "Time"],
-            "time_epoch": ["Timestamp", "timestamp"], # Fallback if string parse fails
+            "time_epoch": ["Timestamp", "timestamp"],
             "account": ["Account", "User ID", "account"],
             "closedPnL": ["Closed PnL", "Realized PnL", "closedPnL", "pnl"],
             "size": ["Size USD", "Size Tokens", "Volume", "size"],
@@ -87,10 +85,9 @@ class DataLoader:
         current_cols = lf.collect_schema().names()
         rename_map = {}
         for target, aliases in schema_map.items():
-            # Prioritize matches found in file
             matches = [col for col in aliases if col in current_cols]
             if matches:
-                rename_map[matches[0]] = target # Pick first match
+                rename_map[matches[0]] = target 
         
         if rename_map:
             lf = lf.rename(rename_map)
@@ -99,22 +96,21 @@ class DataLoader:
         if "leverage" not in lf.collect_schema().names():
             lf = lf.with_columns(pl.lit(1.0).alias("leverage"))
 
-        # 3. Parse Date (Robust Logic)
-        # Handles: "02-12-2024 22:50" (DD-MM-YYYY HH:MM) and Epoch MS
+        # 3. Parse Date (Robust Logic for your specific formats)
         time_exprs = []
         
+        # Handle "02-12-2024 22:50"
         if "time_str" in lf.collect_schema().names():
             time_exprs.append(pl.col("time_str").str.strptime(pl.Datetime, "%d-%m-%Y %H:%M", strict=False))
             time_exprs.append(pl.col("time_str").str.strptime(pl.Datetime, "%d-%m-%Y %H:%M:%S", strict=False))
-            time_exprs.append(pl.col("time_str").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S", strict=False))
         
+        # Handle "1.73E+12" (Epoch MS)
         if "time_epoch" in lf.collect_schema().names():
-            # Assume MS if > 3e10, else S
             time_exprs.append(pl.from_epoch(pl.col("time_epoch").cast(pl.Int64), time_unit="ms"))
-            time_exprs.append(pl.from_epoch(pl.col("time_epoch").cast(pl.Int64), time_unit="s"))
 
         if not time_exprs:
-             raise ValueError("No valid timestamp column found in Trades file.")
+             # Fallback if no valid timestamp column found
+             raise ValueError("No valid timestamp column found (Expected 'Timestamp IST' or 'Timestamp').")
 
         lf = lf.with_columns(
             pl.coalesce(time_exprs).dt.date().alias("date_dt")
