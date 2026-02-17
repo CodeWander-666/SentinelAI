@@ -6,36 +6,35 @@ from src.data_loader import DataLoader
 from src.utils import PipelineTracker
 from src.models import ModelEngine
 
+# --- APP CONFIG ---
+st.set_page_config(page_title="SentinelAI Pro", layout="wide", page_icon="🦅")
 
-st.set_page_config(page_title="SentinelAI ", layout="wide", page_icon="AI")
-
-
+# --- TRADER THEME CSS ---
 st.markdown("""
 <style>
     /* Dark Mode Global */
     .stApp { background-color: #0E1117; color: #E0E0E0; font-family: 'Segoe UI', sans-serif; }
     
-    /* Metrics Cards */
+    /* Metrics Cards - BIGGER & BOLDER */
     div[data-testid="stMetric"] {
         background-color: #161b22;
         border: 1px solid #30363d;
-        padding: 15px;
-        border-radius: 8px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        min-height: 140px; /* Enforce height */
     }
-    div[data-testid="stMetricLabel"] { color: #8b949e; font-size: 0.9rem; }
-    div[data-testid="stMetricValue"] { color: #58a6ff; font-weight: 600; }
+    div[data-testid="stMetricLabel"] { color: #8b949e; font-size: 1.1rem; font-weight: 500; }
+    div[data-testid="stMetricValue"] { color: #58a6ff; font-size: 2rem !important; font-weight: 700; }
+    div[data-testid="stMetricDelta"] { font-size: 0.9rem; }
     
     /* Tabs */
-    .stTabs [data-baseweb="tab-list"] { gap: 20px; }
-    .stTabs [data-baseweb="tab"] { background-color: transparent; border: none; color: #8b949e; }
-    .stTabs [aria-selected="true"] { color: #58a6ff; border-bottom: 2px solid #58a6ff; }
+    .stTabs [data-baseweb="tab-list"] { gap: 20px; margin-top: 20px; }
+    .stTabs [data-baseweb="tab"] { background-color: transparent; border: none; color: #8b949e; font-size: 1.2rem; }
+    .stTabs [aria-selected="true"] { color: #58a6ff; border-bottom: 3px solid #58a6ff; }
     
     /* Sidebar */
     [data-testid="stSidebar"] { background-color: #010409; border-right: 1px solid #30363d; }
-    
-    /* Tables */
-    div[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -44,8 +43,8 @@ if 'df' not in st.session_state: st.session_state.df = None
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title(" SENTINEL AI")
-    st.caption("Trader Performance vs Market Sentiment")
+    st.title("🦅 SENTINEL PRO")
+    st.caption("Quantitative Trading Intelligence")
     st.divider()
     
     source = st.radio("DATA SOURCE", ["Repository", "Manual Upload"], index=1)
@@ -79,19 +78,25 @@ if st.session_state.df is not None:
     engine = ModelEngine()
     stats = engine.calculate_stats(df)
     
-    # 1. TOP KPI ROW
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Net Profit (PnL)", f"${stats['Total PnL']:,.0f}")
-    c2.metric("Profit Factor", f"{stats['Profit Factor']:.2f}")
-    c3.metric("Win Rate", f"{stats['Win Rate']:.1f}%")
-    c4.metric("Max Drawdown", f"${stats['Max Drawdown']:,.0f}")
-    c5.metric("Avg Leverage", f"{df['leverage'].mean():.1f}x")
+    st.markdown("### 📊 Live Performance Metrics")
+    
+    # --- ROW 1: FINANCIALS ---
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Net Profit (PnL)", f"${stats['Total PnL']:,.0f}", delta="Realized Equity")
+    c2.metric("Profit Factor", f"{stats['Profit Factor']:.2f}", delta="> 1.5 Target")
+    c3.metric("Max Drawdown", f"${stats['Max Drawdown']:,.0f}", delta="Risk Exposure", delta_color="inverse")
+    
+    # --- ROW 2: TRADING STATS ---
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Win Rate", f"{stats['Win Rate']:.1f}%", delta="Batting Avg")
+    c5.metric("Avg Leverage", f"{df['leverage'].mean():.1f}x", delta="Position Sizing")
+    c6.metric("Total Trades", f"{len(df):,}", delta="Volume")
     
     st.divider()
 
     # 2. MAIN TABS
     tab_perf, tab_edge, tab_data, tab_ai = st.tabs([
-        " PERFORMANCE", " SENTIMENT EDGE", " TRADE JOURNAL", " AI STRATEGY"
+        "📈 PERFORMANCE", "🧠 SENTIMENT EDGE", "📋 TRADE JOURNAL", "🤖 AI STRATEGY"
     ])
 
     # TAB 1: PERFORMANCE (The Trader View)
@@ -160,7 +165,7 @@ if st.session_state.df is not None:
             st.plotly_chart(fig_clus, use_container_width=True)
             
         with col_txt:
-            st.info("###  RISK PROTOCOL")
+            st.info("### 🛡️ RISK PROTOCOL")
             fear_pnl = df[df['value_classification']=='Fear']['closedPnL'].mean()
             if fear_pnl < 0:
                 st.write("**Condition:** Negative Expectancy during FEAR.")
@@ -169,7 +174,7 @@ if st.session_state.df is not None:
                 st.write("**Condition:** Stable performance in all regimes.")
                 st.write("**Action:** Maintain standard sizing.")
                 
-            st.success("###  ALPHA SIGNAL")
+            st.success("### 🚀 ALPHA SIGNAL")
             st.write("**Observation:** High leverage clusters correlate with higher volatility but not necessarily higher Sharpes.")
             st.write("**Action:** Cap leverage at 3x for consistent compounding.")
 
