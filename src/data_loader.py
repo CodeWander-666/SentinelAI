@@ -5,23 +5,17 @@ import warnings
 warnings.filterwarnings('ignore')
 
 class DataLoader:
-    """
-    DECOUPLED DATA ENGINE (V8.0)
-    Strictly handles Sentiment vs Trades separately to prevent schema leakage.
-    Self-heals missing 'leverage' and handles scientific notation (1.73E+12).
-    """
-
-    def _to_num(self, series):
-        """Cleans strings like '$1,200.50' into floats."""
+    def _clean_num(self, series):
+        """Cleans currency strings and scientific notation into floats."""
         return pd.to_numeric(series.astype(str).str.replace(r'[$,\s]', '', regex=True), errors='coerce').fillna(0.0)
 
     def load_and_process(self, sentiment_source, trades_source):
         try:
             # --- 1. PROCESS TRADES (historical_data.csv) ---
             df_t = pd.read_csv(trades_source)
-            df_t.columns = [c.strip() for c in df_t.columns] # Remove accidental spaces
+            df_t.columns = [c.strip() for c in df_t.columns] # Remove hidden spaces
             
-            # Map specific Hyperliquid headers to internal names
+            # Professional Mapping for Hyperliquid Schema
             t_map = {
                 'Timestamp IST': 'time_str',
                 'Timestamp': 'time_epoch',
@@ -33,28 +27,30 @@ class DataLoader:
             }
             df_t.rename(columns=t_map, inplace=True)
 
-            # Date Parsing: Use Epoch (1.73E12) first for 100% accuracy
+            # NUCLEAR DATE PARSER: Priority 1 (Epoch) -> Priority 2 (IST String)
             if 'time_epoch' in df_t.columns:
-                df_t['date_dt'] = pd.to_datetime(pd.to_numeric(df_t['time_epoch'], errors='coerce'), unit='ms', errors='coerce')
+                # Handles Scientific Notation (1.73E+12)
+                epoch_data = pd.to_numeric(df_t['time_epoch'], errors='coerce')
+                df_t['date_dt'] = pd.to_datetime(epoch_data, unit='ms', errors='coerce')
             
-            # Fallback to IST String (02-12-2024)
             if 'date_dt' not in df_t.columns or df_t['date_dt'].isnull().all():
+                # Handles '02-12-2024 22:50'
                 df_t['date_dt'] = pd.to_datetime(df_t['time_str'], dayfirst=True, errors='coerce')
 
             df_t = df_t.dropna(subset=['date_dt'])
             df_t['date_dt'] = df_t['date_dt'].dt.normalize()
 
-            # Self-Healing: If 'leverage' is missing from the CSV, create it
+            # SELF-HEALING: If 'leverage' is missing in your CSV, inject 1.0 (Spot)
             if 'leverage' not in df_t.columns:
                 df_t['leverage'] = 1.0
             
             # Clean numeric data
-            df_t['pnl'] = self._to_num(df_t['pnl'])
-            df_t['size'] = self._to_num(df_t['size'])
-            df_t['leverage'] = self._to_num(df_t['leverage'])
+            df_t['pnl'] = self._clean_num(df_t['pnl'])
+            df_t['size'] = self._clean_num(df_t['size'])
+            df_t['leverage'] = self._clean_num(df_t['leverage'])
             df_t['is_win'] = (df_t['pnl'] > 0).astype(int)
 
-            # Grouping to prevent "Duplicate Key" merge errors
+            # DEDUPLICATION: Collapse multi-trade days into single daily summaries
             df_daily_trades = df_t.groupby(['date_dt', 'account']).agg({
                 'pnl': 'sum',
                 'leverage': 'mean',
@@ -69,22 +65,20 @@ class DataLoader:
             
             s_map = {'date': 'date_dt', 'value': 'fng_val', 'classification': 'regime'}
             df_s.rename(columns=s_map, inplace=True)
-            
             df_s['date_dt'] = pd.to_datetime(df_s['date_dt'], errors='coerce')
             df_s = df_s.dropna(subset=['date_dt']).drop_duplicates('date_dt')
-            df_s = df_s[['date_dt', 'fng_val', 'regime']]
 
             # --- 3. FINAL MERGE ---
-            df_final = pd.merge(df_daily_trades, df_s, on='date_dt', how='left')
+            df_final = pd.merge(df_daily_trades, df_s[['date_dt', 'fng_val', 'regime']], on='date_dt', how='left')
 
-            # Impute missing values
+            # Impute missing sentiment (Forward fill)
             df_final['fng_val'] = df_final['fng_val'].ffill().bfill()
             df_final['regime'] = df_final['regime'].ffill().bfill().fillna('Neutral')
 
-            # Rename for Dashboard compatibility
+            # Standardize for Dashboard
             df_final.rename(columns={'pnl': 'closedPnL', 'regime': 'value_classification', 'fng_val': 'value'}, inplace=True)
             
             return df_final
 
         except Exception as e:
-            raise RuntimeError(f"Industrial Ingestion Failed: {str(e)}")
+            raise RuntimeError(f"Data Core Failure: {str(e)}")
