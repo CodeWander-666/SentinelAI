@@ -11,10 +11,32 @@ st.set_page_config(page_title="SentinelAI Expert", layout="wide", page_icon="�
 # --- PROFESSIONAL STYLING ---
 st.markdown("""
 <style>
+    /* Global Dark Theme */
     .stApp { background-color: #0E1117; color: #E0E0E0; font-family: 'Segoe UI', sans-serif; }
-    div[data-testid="stMetric"] { background-color: #161b22; border: 1px solid #30363d; padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.2); }
-    h1, h2, h3 { color: #58a6ff; font-weight: 600; }
-    .stTabs [aria-selected="true"] { color: #58a6ff; border-bottom: 3px solid #58a6ff; }
+    
+    /* Spacious Metric Cards */
+    div[data-testid="stMetric"] {
+        background-color: #161b22;
+        border: 1px solid #30363d;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        min-height: 140px; /* Ensures consistent height */
+    }
+    div[data-testid="stMetricLabel"] { color: #8b949e; font-size: 1.1rem; font-weight: 500; }
+    div[data-testid="stMetricValue"] { color: #58a6ff; font-size: 2rem !important; font-weight: 700; }
+    div[data-testid="stMetricDelta"] { font-size: 0.9rem; }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] { gap: 20px; margin-top: 20px; }
+    .stTabs [data-baseweb="tab"] { background-color: transparent; border: none; color: #8b949e; font-size: 1.1rem; }
+    .stTabs [aria-selected="true"] { color: #58a6ff; border-bottom: 3px solid #58a6ff; font-weight: bold; }
+    
+    /* Sidebar */
+    [data-testid="stSidebar"] { background-color: #010409; border-right: 1px solid #30363d; }
+    
+    /* Tables */
+    div[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -29,12 +51,16 @@ with st.sidebar:
     
     u_t, u_s = None, None
     if source == "Manual Upload":
-        u_t = st.file_uploader("Trades Data", type="csv")
-        u_s = st.file_uploader("Sentiment Data", type="csv")
+        u_t = st.file_uploader("Trades Data (CSV)", type="csv")
+        u_s = st.file_uploader("Sentiment Data (CSV)", type="csv")
     
     if st.button("RUN ANALYSIS", type="primary"):
         loader = DataLoader()
-        tracker = PipelineTracker(st.empty(), st.progress(0))
+        st.write("---")
+        p_bar = st.progress(0, text="Initializing...")
+        log_box = st.empty()
+        tracker = PipelineTracker(log_box, p_bar)
+        
         try:
             if source == "Manual Upload" and u_t and u_s:
                 st.session_state.df = loader.load_and_process(u_s, u_t, tracker)
@@ -61,13 +87,19 @@ if st.session_state.df is not None:
     # Calculate Global Stats
     kpi = engine.calculate_kpis(df)
 
-    # --- HEADER METRICS ---
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Total PnL", f"${kpi['Total PnL']:,.0f}")
-    c2.metric("Profit Factor", f"{kpi['Profit Factor']:.2f}")
-    c3.metric("Win Rate", f"{kpi['Win Rate']:.1f}%")
-    c4.metric("Avg Leverage", f"{kpi['Avg Leverage']:.1f}x")
-    c5.metric("Total Volume", f"{kpi['Total Trades']:,}")
+    st.markdown("### 📊 Live Performance Metrics")
+
+    # --- ROW 1: FINANCIALS ---
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Net Profit (PnL)", f"${kpi['Total PnL']:,.0f}", delta="Realized Equity")
+    c2.metric("Profit Factor", f"{kpi['Profit Factor']:.2f}", delta="> 1.5 Target")
+    c3.metric("Max Drawdown", f"${kpi['Max Drawdown']:,.0f}", delta="Risk Exposure", delta_color="inverse")
+    
+    # --- ROW 2: TRADING STATS ---
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Win Rate", f"{kpi['Win Rate']:.1f}%", delta="Batting Avg")
+    c5.metric("Avg Leverage", f"{kpi['Avg Leverage']:.1f}x", delta="Position Sizing")
+    c6.metric("Total Trades", f"{kpi['Total Trades']:,}", delta="Volume")
     
     st.divider()
 
@@ -109,7 +141,8 @@ if st.session_state.df is not None:
         with b1:
             # PnL Distribution
             fig_box = px.box(df, x='value_classification', y='closedPnL', color='value_classification', 
-                             title="Does PnL differ by Sentiment?", template="plotly_dark")
+                             title="Does PnL differ by Sentiment?", template="plotly_dark",
+                             color_discrete_map={'Fear': '#da3633', 'Greed': '#238636', 'Neutral': 'gray'})
             st.plotly_chart(fig_box, use_container_width=True)
         with b2:
             # Behavior: Leverage
@@ -131,13 +164,6 @@ if st.session_state.df is not None:
             cluster_stats = df.groupby('Cluster')[['closedPnL', 'leverage', 'is_win', 'trade_count']].mean()
             st.dataframe(cluster_stats.style.highlight_max(axis=0), use_container_width=True)
 
-        st.markdown("#### 3. Key Insights")
-        st.markdown("""
-        * **Insight 1:** Check the 'PnL' column in the table above. If 'Greed' is higher, traders perform better in bullish sentiment.
-        * **Insight 2:** Observe the 'Leverage' violin plot. A wider distribution in one regime indicates inconsistent risk management.
-        * **Insight 3:** The Clusters reveal distinct groups. Usually, one cluster represents 'High Leverage / High Risk' traders.
-        """)
-
     # --- PART C: ACTIONABLE OUTPUT ---
     with tab_c:
         st.subheader("Strategic Directives & Rules of Thumb")
@@ -145,6 +171,9 @@ if st.session_state.df is not None:
         # DYNAMIC LOGIC GENERATION
         fear_data = regime_stats.loc['Fear'] if 'Fear' in regime_stats.index else None
         greed_data = regime_stats.loc['Greed'] if 'Greed' in regime_stats.index else None
+        cluster_stats = df.groupby('Cluster')[['closedPnL', 'leverage']].mean()
+        best_cluster = cluster_stats['closedPnL'].idxmax()
+        worst_cluster = cluster_stats['closedPnL'].idxmin()
         
         col_strat1, col_strat2 = st.columns(2)
         
@@ -163,9 +192,6 @@ if st.session_state.df is not None:
 
         with col_strat2:
             st.info("### 🎯 STRATEGY 2: SEGMENT OPTIMIZATION")
-            # Analyze Clusters
-            best_cluster = cluster_stats['closedPnL'].idxmax()
-            worst_cluster = cluster_stats['closedPnL'].idxmin()
             
             st.write(f"**Observation:** Segment {best_cluster} outperforms Segment {worst_cluster}.")
             st.write(f"**Rule of Thumb:** Mimic behavior of Segment {best_cluster} (Avg Lev: {cluster_stats.loc[best_cluster, 'leverage']:.1f}x).")
