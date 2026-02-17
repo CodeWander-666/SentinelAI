@@ -46,10 +46,9 @@ class DataLoader:
             
             df_t = cleaner.clean_financial_data(df_t)
 
-            # --- METRICS CALCULATION (Part A) ---
+            # --- METRICS CALCULATION ---
             tracker.log("Calculating Performance Metrics...", 40)
             df_t['is_win'] = (df_t['closedPnL'] > 0).astype(int)
-            df_t['is_long'] = (df_t['side'].astype(str).str.lower().str.contains('buy')).astype(int)
             
             # Aggregation
             df_daily = df_t.groupby(['date_dt', 'account']).agg({
@@ -57,11 +56,10 @@ class DataLoader:
                 'leverage': 'mean',
                 'size': 'sum',
                 'is_win': 'mean',
-                'side': 'count',
-                'is_long': 'mean' 
+                'side': 'count'
             }).reset_index()
             
-            df_daily.rename(columns={'side': 'trade_count', 'is_long': 'long_ratio'}, inplace=True)
+            df_daily.rename(columns={'side': 'trade_count'}, inplace=True)
 
             # --- SENTIMENT ---
             tracker.log("Aligning Sentiment Data...", 60)
