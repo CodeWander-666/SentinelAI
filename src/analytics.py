@@ -5,36 +5,38 @@ import numpy as np
 class Analyzer:
     def compare_regimes(self, df, metric='closedPnL'):
         """
-        Performs a T-Test to check for statistically significant differences
-        between 'Fear' and 'Greed' regimes.
+        Safely compares Fear vs Greed.
+        Returns 'N/A' if data is insufficient instead of Crashing.
         """
         try:
-            # Segregate data
-            fear_data = df[df['value_classification'] == 'Fear'][metric]
-            greed_data = df[df['value_classification'] == 'Greed'][metric]
-
-            # Validation: Ensure we have enough data points
-            if len(fear_data) < 2 or len(greed_data) < 2:
+            # 1. Check Data Sufficiency
+            if df.empty or 'value_classification' not in df.columns:
+                return {'status': 'error', 'message': 'No data available'}
+            
+            # 2. Segment Data
+            fear = df[df['value_classification'].str.contains('Fear', case=False, na=False)][metric]
+            greed = df[df['value_classification'].str.contains('Greed', case=False, na=False)][metric]
+            
+            # 3. Validation
+            if len(fear) < 2 or len(greed) < 2:
                 return {
-                    'status': 'error',
-                    'message': 'Insufficient data points for T-Test'
+                    'status': 'warning',
+                    'message': 'Insufficient data points for T-Test',
+                    'fear_count': len(fear),
+                    'greed_count': len(greed)
                 }
-
-            # Independent T-Test (assuming unequal variance)
-            t_stat, p_val = stats.ttest_ind(fear_data, greed_data, equal_var=False)
-
+                
+            # 4. Statistical Test
+            t_stat, p_val = stats.ttest_ind(fear, greed, equal_var=False)
+            
             return {
                 'status': 'success',
                 't_statistic': t_stat,
                 'p_value': p_val,
                 'is_significant': p_val < 0.05,
-                'fear_mean': fear_data.mean(),
-                'greed_mean': greed_data.mean()
+                'fear_mean': fear.mean(),
+                'greed_mean': greed.mean()
             }
+            
         except Exception as e:
             return {'status': 'error', 'message': str(e)}
-
-    def get_correlation(self, df):
-        """Calculates correlation matrix for key metrics."""
-        cols = ['closedPnL', 'leverage', 'size', 'value']
-        return df[cols].corr()
