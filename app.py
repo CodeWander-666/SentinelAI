@@ -2,132 +2,100 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import os
-
-# Local Modules
 from src.data_loader import DataLoader
-# Ensure these exist or create placeholders
-try:
-    from src.models import ModelEngine
-except ImportError:
-    class ModelEngine: 
-        def cluster_traders(self, df): return pd.DataFrame() # Placeholder
+from src.models import ModelEngine
 
-# --- 1. CONFIGURATION ---
-st.set_page_config(page_title="PrimeTrade Sentinel", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="PrimeTrade Sentinel", layout="wide", page_icon="🛡️")
 
-# Professional Dark Mode CSS
+# --- CUSTOM CSS ---
 st.markdown("""
 <style>
-    .stApp { background-color: #0E1117; color: #FAFAFA; font-family: 'Inter', sans-serif; }
-    div[data-testid="stMetric"] { 
-        background-color: #1F2937; 
-        border: 1px solid #374151; 
-        padding: 15px; 
-        border-radius: 8px; 
-    }
-    h1, h2, h3 { color: #60A5FA; }
-    .stButton>button { 
-        background-color: #2563EB; 
-        color: white; 
-        border: none; 
-        border-radius: 6px; 
-        height: 3rem; 
-        width: 100%;
-        font-weight: 600;
-    }
+    .stApp { background-color: #0E1117; color: #FAFAFA; }
+    .stMetric { background-color: #1F2937; padding: 10px; border-radius: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
+# --- INITIALIZE STATE ---
 if 'df' not in st.session_state: st.session_state.df = None
 
-# --- 2. SIDEBAR CONTROL ---
-st.sidebar.header("DATA FEED CONTROL")
-data_mode = st.sidebar.radio("Input Source", ["Local Repository", "Manual Upload"], index=1)
+# --- SIDEBAR ---
+st.sidebar.title("🛡️ SENTINEL CORE")
+source = st.sidebar.radio("Data Stream", ["Local Repository", "Upload CSV"], index=1)
 
-uploaded_trades, uploaded_sent = None, None
-if data_mode == "Manual Upload":
-    uploaded_trades = st.sidebar.file_uploader("Upload Trades (CSV)", type="csv")
-    uploaded_sent = st.sidebar.file_uploader("Upload Sentiment (CSV)", type="csv")
+u_t, u_s = None, None
+if source == "Upload CSV":
+    u_t = st.sidebar.file_uploader("Trades Data", type="csv")
+    u_s = st.sidebar.file_uploader("Sentiment Data", type="csv")
 
-if st.sidebar.button("INITIALIZE ANALYTICS"):
+# --- EXECUTION BUTTON ---
+if st.sidebar.button("RUN DIAGNOSTICS & LOAD"):
     loader = DataLoader()
     try:
-        with st.spinner("Ingesting & Normalizing Data..."):
-            # Determine Source
-            if data_mode == "Manual Upload" and uploaded_trades and uploaded_sent:
-                st.session_state.df = loader.load_and_process(uploaded_sent, uploaded_trades)
-                st.toast("Pipeline Active: Uploaded Data", icon="✅")
+        with st.spinner("Running System Check..."):
+            if source == "Upload CSV" and u_t and u_s:
+                st.session_state.df = loader.load_and_process(u_s, u_t)
+            elif source == "Local Repository":
+                base = os.path.dirname(os.path.abspath(__file__))
+                t_path = os.path.join(base, 'data', 'trades.csv')
+                s_path = os.path.join(base, 'data', 'sentiment.csv')
+                
+                # Check file existence
+                if not os.path.exists(t_path): st.error(f"Missing: {t_path}"); st.stop()
+                
+                st.session_state.df = loader.load_and_process(s_path, t_path)
             
-            elif data_mode == "Local Repository":
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-                f_t = os.path.join(base_dir, 'data', 'trades.csv')
-                f_s = os.path.join(base_dir, 'data', 'sentiment.csv')
-                if os.path.exists(f_t) and os.path.exists(f_s):
-                    st.session_state.df = loader.load_and_process(f_s, f_t)
-                    st.toast("Pipeline Active: Local Data", icon="✅")
-                else:
-                    st.error("Local files not found. Please upload manually.")
-            
-            else:
-                st.warning("Please upload both CSV files.")
-
+            st.toast("System Healthy - Data Loaded", icon="✅")
     except Exception as e:
-        st.error(f"System Failure: {e}")
+        # Error is already printed by loader, just stop
+        st.stop()
 
-# --- 3. MAIN DASHBOARD ---
+# --- MAIN DASHBOARD ---
 if st.session_state.df is not None:
     df = st.session_state.df
     
-    st.title("SENTINEL INTELLIGENCE TERMINAL")
-    st.caption(f"System Status: ONLINE | Records Analyzed: {len(df):,}")
+    # TABS FOR VIEW
+    tab_dash, tab_diag = st.tabs(["📊 DASHBOARD", "🛠️ SELF-DIAGNOSIS"])
     
-    # KPIS
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Net Profit (PnL)", f"${df['closedPnL'].sum():,.0f}")
-    k2.metric("Win Rate", f"{df['is_win'].mean()*100:.1f}%")
-    k3.metric("Avg Leverage", f"{df['leverage'].mean():.2f}x")
-    k4.metric("Active Days", f"{len(df):,}")
-
-    st.markdown("---")
-
-    # CHARTS (Using width='stretch' to fix deprecation warning)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Profit vs. Sentiment")
-        fig = px.box(df, x='value_classification', y='closedPnL', 
-                     color='value_classification', template='plotly_dark',
-                     color_discrete_map={'Fear': '#EF4444', 'Greed': '#10B981', 'Neutral': '#6B7280'})
-        st.plotly_chart(fig, width='stretch') # FIXED PARAMETER
-
-    with c2:
-        st.subheader("Leverage Impact")
-        fig2 = px.scatter(df, x='leverage', y='closedPnL', 
-                          color='value_classification', template='plotly_dark',
-                          size='size', opacity=0.7)
-        st.plotly_chart(fig2, width='stretch') # FIXED PARAMETER
-
-    # AI SECTION
-    st.markdown("---")
-    st.subheader("🧠 Algorithmic Segmentation")
-    
-    if st.button("RUN CLUSTERING MODEL"):
-        try:
-            from src.models import ModelEngine
-            engine = ModelEngine()
-            # Ensure model can handle the dataframe
-            clusters = engine.cluster_traders(df)
+    with tab_dash:
+        st.title("TRADING INTELLIGENCE")
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Net PnL", f"${df['closedPnL'].sum():,.0f}")
+        k2.metric("Win Rate", f"{df['is_win'].mean()*100:.1f}%")
+        k3.metric("Avg Leverage", f"{df['leverage'].mean():.2f}x")
+        k4.metric("Days Analyzed", f"{len(df):,}")
+        
+        st.markdown("---")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Profit by Sentiment")
+            fig = px.box(df, x='value_classification', y='closedPnL', template='plotly_dark', color='value_classification')
+            st.plotly_chart(fig, use_container_width=True)
+        with c2:
+            st.subheader("Leverage Impact")
+            fig2 = px.scatter(df, x='leverage', y='closedPnL', template='plotly_dark', color='value_classification', size='size')
+            st.plotly_chart(fig2, use_container_width=True)
             
-            if not clusters.empty:
-                st.success("Segmentation Complete")
-                st.plotly_chart(px.scatter(clusters, x='leverage', y='closedPnL', color='Cluster', template='plotly_dark'), width='stretch')
-                
-                # Safe Display without Styler (avoids Matplotlib error)
-                st.write("**Cluster Performance Metrics**")
-                stats = clusters.groupby('Cluster')[['leverage', 'closedPnL', 'is_win']].mean()
-                st.dataframe(stats, use_container_width=True) 
-        except Exception as e:
-            st.warning(f"Modeling Module Unavailable or Error: {e}")
+        # AI Cluster
+        if st.button("RUN AI SEGMENTATION"):
+            eng = ModelEngine()
+            cl = eng.cluster_traders(df)
+            st.plotly_chart(px.scatter(cl, x='leverage', y='closedPnL', color='Cluster', template='plotly_dark'), use_container_width=True)
+
+    with tab_diag:
+        st.markdown("### 🩺 Data Health Check")
+        st.write("This section helps you verify the data quality.")
+        
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.write("**First 5 Rows (Check Columns):**")
+            st.dataframe(df.head())
+        with col_d2:
+            st.write("**Column Data Types:**")
+            st.write(df.dtypes.astype(str))
+            
+        st.write("**Missing Values Scan:**")
+        st.write(df.isnull().sum())
 
 else:
-    # Empty State
-    st.info("👋 Welcome. Please select your data source on the left to begin.")
+    st.info("System Idle. Upload files and click 'RUN DIAGNOSTICS & LOAD' to begin.")
