@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from src.data_loader import DataLoader
-from src.analytics import Analytics
+from src.analytics import Analytics   # Note: class name is Analytics, not Analyzer
 
 st.set_page_config(layout="wide")
 st.title("📊 Trader Performance vs Market Sentiment")
@@ -19,14 +19,24 @@ df['date_dt'] = pd.to_datetime(df['date_dt'])
 
 # Sidebar filters
 st.sidebar.header("Filters")
-selected_accounts = st.sidebar.multiselect("Select Accounts", options=df['account'].unique(), default=df['account'].unique()[:5])
+selected_accounts = st.sidebar.multiselect(
+    "Select Accounts",
+    options=df['account'].unique(),
+    default=df['account'].unique()[:5] if len(df['account'].unique()) >= 5 else df['account'].unique()
+)
 date_range = st.sidebar.date_input("Date Range", [df['date_dt'].min(), df['date_dt'].max()])
-sentiment_filter = st.sidebar.multiselect("Sentiment", options=df['value_classification'].unique(), default=df['value_classification'].unique())
+sentiment_filter = st.sidebar.multiselect(
+    "Sentiment",
+    options=df['value_classification'].unique(),
+    default=df['value_classification'].unique()
+)
 
-filtered_df = df[(df['account'].isin(selected_accounts)) &
-                 (df['date_dt'] >= pd.to_datetime(date_range[0])) &
-                 (df['date_dt'] <= pd.to_datetime(date_range[1])) &
-                 (df['value_classification'].isin(sentiment_filter))]
+filtered_df = df[
+    (df['account'].isin(selected_accounts)) &
+    (df['date_dt'] >= pd.to_datetime(date_range[0])) &
+    (df['date_dt'] <= pd.to_datetime(date_range[1])) &
+    (df['value_classification'].isin(sentiment_filter))
+]
 
 # Main panel
 col1, col2, col3 = st.columns(3)
@@ -40,8 +50,10 @@ tab1, tab2, tab3 = st.tabs(["PnL vs Sentiment", "Trader Metrics", "Correlation"]
 with tab1:
     fig = px.box(filtered_df, x='value_classification', y='total_pnl', title='Daily PnL by Sentiment')
     st.plotly_chart(fig, use_container_width=True)
-    fig2 = px.bar(filtered_df.groupby('value_classification')[['total_pnl', 'trade_count']].mean().reset_index(),
-                  x='value_classification', y='total_pnl', title='Average PnL on Fear vs Greed Days')
+    fig2 = px.bar(
+        filtered_df.groupby('value_classification')[['total_pnl', 'trade_count']].mean().reset_index(),
+        x='value_classification', y='total_pnl', title='Average PnL on Fear vs Greed Days'
+    )
     st.plotly_chart(fig2, use_container_width=True)
 
 with tab2:
