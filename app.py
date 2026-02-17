@@ -10,88 +10,130 @@ from src.models import ModelEngine
 st.set_page_config(
     page_title="PrimeTrade Infinity",
     layout="wide",
-    page_icon="🚀"
+    page_icon="⚡"
 )
 
-# Custom CSS for Speed & Aesthetics
+# Custom CSS
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #FAFAFA; }
-    div.stButton > button { background-color: #00CC96; color: white; border: none; }
+    div.stButton > button { 
+        background-color: #00CC96; color: white; border: none; 
+        font-size: 18px; padding: 10px 24px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
+# --- STATE MANAGEMENT ---
+if 'data_processed' not in st.session_state:
+    st.session_state.data_processed = False
+if 'df' not in st.session_state:
+    st.session_state.df = None
+
 # --- SIDEBAR: DATA INGESTION ---
 st.sidebar.title("🚀 Data Engine")
-st.sidebar.info("Using Polars Engine for high-performance processing (1GB+ Support).")
 
-# 1. File Uploader (Up to 200MB by default, configurable via server)
-uploaded_trades = st.sidebar.file_uploader("Upload Trades CSV (Max 200MB)", type=["csv"])
-uploaded_sent = st.sidebar.file_uploader("Upload Sentiment CSV", type=["csv"])
+# 1. Check for Local Data
+base_dir = os.path.dirname(os.path.abspath(__file__))
+local_sent = os.path.join(base_dir, 'data', 'sentiment.csv')
+local_trade = os.path.join(base_dir, 'data', 'trades.csv')
+local_exists = os.path.exists(local_sent) and os.path.exists(local_trade)
 
-# --- DATA LOADING LOGIC ---
-@st.cache_data(show_spinner=False)
-def get_data(sent_file, trade_file):
+uploaded_trades = None
+uploaded_sent = None
+
+if not local_exists:
+    st.sidebar.warning("⚠️ Local data not found.")
+    st.sidebar.info("Please upload your datasets to begin.")
+    uploaded_trades = st.sidebar.file_uploader("Upload Trades CSV", type=["csv"])
+    uploaded_sent = st.sidebar.file_uploader("Upload Sentiment CSV", type=["csv"])
+else:
+    st.sidebar.success("✅ Local Data Detected")
+    use_upload = st.sidebar.checkbox("Upload New Data Instead?")
+    if use_upload:
+        uploaded_trades = st.sidebar.file_uploader("Upload New Trades", type=["csv"])
+        uploaded_sent = st.sidebar.file_uploader("Upload New Sentiment", type=["csv"])
+
+# --- START ANALYSIS BUTTON ---
+start_button = st.sidebar.button("🚀 Start Analysis")
+
+# --- PROCESSING LOGIC ---
+if start_button:
     dl = DataLoader()
-    return dl.load_and_process(sent_file, trade_file)
-
-try:
-    with st.spinner("🚀 Turbo-charging Data Engine... Processing..."):
-        # LOGIC: If user uploads files, use them. Else, use local repo files.
-        if uploaded_trades and uploaded_sent:
-            st.sidebar.success("✅ Using Uploaded Data")
-            df = get_data(uploaded_sent, uploaded_trades)
-        else:
-            # Fallback to local files (Your 1000MB Desktop file path)
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            local_sent = os.path.join(base_dir, 'data', 'sentiment.csv')
-            local_trade = os.path.join(base_dir, 'data', 'trades.csv')
-            
-            if os.path.exists(local_trade):
-                st.sidebar.info(f"📂 Loaded Local Data")
-                df = get_data(local_sent, local_trade)
+    try:
+        with st.spinner("🔄 Ingesting & Analyzing Data..."):
+            # Determine source
+            if uploaded_trades and uploaded_sent:
+                df = dl.load_and_process(uploaded_sent, uploaded_trades)
+                st.toast("Using Uploaded Data", icon="📂")
+            elif local_exists and not (uploaded_trades or uploaded_sent):
+                df = dl.load_and_process(local_sent, local_trade)
+                st.toast("Using Local Data", icon="💻")
             else:
-                st.warning("⚠️ Waiting for data upload...")
+                st.error("❌ No data source selected. Please upload files.")
                 st.stop()
 
-    # Initialize Engines
+            # Store in Session State
+            st.session_state.df = df
+            st.session_state.data_processed = True
+            st.rerun() # Force refresh to show dashboard
+
+    except RuntimeError as e:
+        st.error("🚨 Analysis Failed")
+        st.warning(f"Engine Error: {e}")
+        st.info("Tip: Ensure your CSV has columns like 'Timestamp' and 'Closed PnL'.")
+    except Exception as e:
+        st.error(f"Unexpected Error: {e}")
+
+# --- MAIN DASHBOARD (Only shows after processing) ---
+if st.session_state.data_processed and st.session_state.df is not None:
+    df = st.session_state.df
     analyzer = Analyzer()
     engine = ModelEngine()
 
-except Exception as e:
-    st.error(f"Engine Failure: {e}")
-    st.stop()
+    st.title("⚡ PrimeTrade Infinity Dashboard")
+    
+    # Filter
+    regime_filter = st.multiselect(
+        "Filter Regime", 
+        options=df['value_classification'].unique(), 
+        default=df['value_classification'].unique()
+    )
+    filtered_df = df[df['value_classification'].isin(regime_filter)]
 
-# --- MAIN DASHBOARD (Same as before, but faster) ---
-st.title("🚀 PrimeTrade Infinity: High-Frequency Analytics")
-st.markdown("### Processed 1M+ rows in < 2 seconds.")
+    # Metrics
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Volume Processed", f"${filtered_df['size'].sum()/1e6:.1f}M")
+    c2.metric("Avg Leverage", f"{filtered_df['leverage'].mean():.2f}x")
+    c3.metric("Net PnL", f"${filtered_df['closedPnL'].sum():,.0f}")
+    c4.metric("Active Traders", f"{filtered_df['account'].nunique()}")
 
-# Filter
-regime_filter = st.sidebar.multiselect(
-    "Filter Regime", options=df['value_classification'].unique(), default=df['value_classification'].unique()
-)
-filtered_df = df[df['value_classification'].isin(regime_filter)]
+    st.markdown("---")
 
-# Metrics
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Volume Processed", f"${filtered_df['size'].sum()/1e6:.1f}M")
-c2.metric("Avg Leverage", f"{filtered_df['leverage'].mean():.2f}x")
-c3.metric("Net PnL", f"${filtered_df['closedPnL'].sum():,.0f}")
-c4.metric("Active Traders", f"{filtered_df['account'].nunique()}")
+    # Visuals
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("PnL Distribution")
+        fig = px.box(filtered_df, x='value_classification', y='closedPnL', 
+                     color='value_classification',
+                     color_discrete_map={'Fear': '#FF4B4B', 'Greed': '#00CC96'})
+        st.plotly_chart(fig, use_container_width=True)
 
-st.markdown("---")
+    with col2:
+        st.subheader("Leverage Correlation")
+        # Sample for performance if > 10k rows
+        plot_df = filtered_df.sample(n=min(10000, len(filtered_df)))
+        fig2 = px.scatter(plot_df, x='leverage', y='closedPnL', 
+                          color='value_classification', size='size')
+        st.plotly_chart(fig2, use_container_width=True)
 
-# Visuals
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("PnL Distribution")
-    fig = px.box(df, x='value_classification', y='closedPnL', color='value_classification', 
-                 color_discrete_map={'Fear': '#FF4B4B', 'Greed': '#00CC96'})
-    st.plotly_chart(fig, use_container_width=True)
-
-with col2:
-    st.subheader("Leverage Correlation")
-    # Sampling for scatter plot speed (10k points max)
-    plot_df = filtered_df.sample(n=min(10000, len(filtered_df)), random_state=42)
-    fig2 = px.scatter(plot_df, x='leverage', y='closedPnL', color='value_classification', size='size')
-    st.plotly_chart(fig2, use_container_width=True)
+else:
+    # Landing Page State
+    st.title("👋 Welcome to PrimeTrade Sentinel")
+    st.markdown("""
+    ### Ready to Analyze?
+    1. Check the **Sidebar** on the left.
+    2. Upload your **Trades** and **Sentiment** CSV files.
+    3. Click **"Start Analysis"** to generate the dashboard.
+    """)
+    st.image("https://streamlit.io/images/brand/streamlit-mark-color.png", width=100)
