@@ -9,13 +9,12 @@ logger = logging.getLogger(__name__)
 
 class DataLoader:
     """
-    AUTO-FIXING DATA ENGINE
-    This loader treats the incoming CSV as 'hostile' and forcibly cleans it 
-    before the app tries to use it.
+    AUTONOMOUS DATA ENGINE
+    Performs 'Deep Cleaning' on-the-fly during ingestion.
     """
 
     def _clean_header(self, col):
-        """Turns 'Timestamp IST ' -> 'timestamp_ist'"""
+        """Normalizes headers: 'Timestamp IST ' -> 'timestamp_ist'"""
         return str(col).strip().lower().replace(" ", "_")
 
     def load_and_process(self, sentiment_source, trades_source, tracker):
@@ -37,14 +36,13 @@ class DataLoader:
             df_t.columns = [self._clean_header(c) for c in df_t.columns]
             
             # 3. FIX TIMESTAMP (The Critical Error Source)
-            # We explicitly look for 'timestamp_ist' because we know your file has it
+            # Your file has 'timestamp_ist' (Good) and 'timestamp' (Bad Scientific Notation)
             if 'timestamp_ist' in df_t.columns:
                 tracker.log("Found 'Timestamp IST'. Parsing...", 15)
                 df_t['date_dt'] = pd.to_datetime(df_t['timestamp_ist'], dayfirst=True, errors='coerce')
             elif 'timestamp' in df_t.columns:
-                # Handle Scientific Notation 1.73E+12
+                # Handle Scientific Notation 1.73E+12 if IST is missing
                 tracker.log("Found 'Timestamp'. Converting Scientific Notation...", 15)
-                # Force to float first, then to datetime
                 df_t['date_dt'] = pd.to_datetime(pd.to_numeric(df_t['timestamp'], errors='coerce'), unit='ms', errors='coerce')
             else:
                 # Last ditch search
@@ -56,18 +54,17 @@ class DataLoader:
                         break
                 if not found: raise ValueError("CRITICAL: No timestamp found in trades.")
 
-            # Drop invalid dates
+            # Drop invalid dates and Normalize
             df_t = df_t.dropna(subset=['date_dt'])
             df_t['date_dt'] = df_t['date_dt'].dt.normalize()
 
             # 4. FIX MISSING LEVERAGE
-            # Your file DOES NOT have leverage. We must inject it or the dashboard crashes.
+            # Your file DOES NOT have leverage. We must inject it.
             if 'leverage' not in df_t.columns:
                 tracker.log("⚠️ No Leverage found. Defaulting to 1.0", 20)
                 df_t['leverage'] = 1.0
             
             # 5. Map Columns (Flexible Mapping)
-            # We map specific dirty names to our clean internal names
             col_map = {
                 'account': ['account', 'user', 'wallet'],
                 'closedPnL': ['closed_pnl', 'pnl', 'realized_pnl', 'profit'],
@@ -104,6 +101,7 @@ class DataLoader:
             tracker.log("Ingesting Sentiment...", 50)
             
             # 1. Load with flexible separator (Handles Tab vs Comma)
+            # This fixes the "FATAL: No Date" error caused by TSV format
             try:
                 df_s = pd.read_csv(sentiment_source, sep=None, engine='python')
             except:
