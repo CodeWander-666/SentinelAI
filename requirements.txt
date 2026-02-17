@@ -5,3 +5,5 @@ scipy
 scikit-learn
 xgboost
 plotly
+polars
+pyarrow
