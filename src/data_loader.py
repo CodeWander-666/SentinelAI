@@ -1,73 +1,103 @@
 import pandas as pd
 import numpy as np
 import logging
+import streamlit as st
 
-# Configure robust logging
-logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
+# Configure Logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DataLoader:
     """
-    GOLD MASTER DATA ENGINE
-    Strategy: Strict Type Enforcement & Aggressive Deduplication.
+    DIAGNOSTIC DATA ENGINE (Pandas Core)
+    1. Auto-detects columns using "Fuzzy Matching" (Case-insensitive).
+    2. detailed 'diagnose_file' function to show you exactly what is wrong.
+    3. Handles 1.73E+12 (Scientific Notation) and '02-12-2024' (Day-First) dates.
     """
 
-    def _to_float(self, series):
-        """Forces data to float, stripping symbols like '$' or ','."""
-        return pd.to_numeric(series.astype(str).str.replace(r'[$,\s]', '', regex=True), errors='coerce').fillna(0.0)
+    def _clean_header(self, col_name):
+        """Turns 'Timestamp IST ' into 'timestamp_ist'."""
+        return str(col_name).strip().lower().replace(" ", "_")
+
+    def diagnose_file(self, df, name):
+        """
+        SELF-DIAGNOSIS: Returns a report of what columns were actually found.
+        """
+        report = {
+            "file": name,
+            "rows": len(df),
+            "columns_found": list(df.columns),
+            "sample_date": df.iloc[0].to_dict() if not df.empty else "EMPTY"
+        }
+        logger.info(f"DIAGNOSIS [{name}]: {report}")
+        return report
 
     def load_and_process(self, sentiment_source, trades_source):
         try:
-            logger.info("--- [ETL] Starting Data Pipeline ---")
-
-            # ======================================================
-            # PHASE 1: TRADES INGESTION (historical_data.csv)
-            # ======================================================
+            # =========================================================
+            # PHASE 1: LOAD & DIAGNOSE TRADES
+            # =========================================================
             df_t = pd.read_csv(trades_source)
-            df_t.columns = [c.strip() for c in df_t.columns] # Clean headers
-
-            # 1. Map Columns (Specific to your file)
-            # We map 'Timestamp' (Epoch) as priority, 'Timestamp IST' as fallback
-            col_map = {
-                'Timestamp': 'time_epoch',
-                'Timestamp IST': 'time_str',
-                'Account': 'account',
-                'Closed PnL': 'pnl',
-                'Size USD': 'size',
-                'Side': 'side',
-                'Leverage': 'leverage' # Might be missing, handled below
-            }
-            df_t.rename(columns=col_map, inplace=True)
-
-            # 2. Date Parsing (The "Nuclear" Fix)
-            # Priority: Scientific Notation Epoch (1.73E+12) -> Exact precision
-            if 'time_epoch' in df_t.columns:
-                # Coerce to numeric first to handle scientific notation strings
-                epoch_vals = pd.to_numeric(df_t['time_epoch'], errors='coerce')
-                df_t['date_dt'] = pd.to_datetime(epoch_vals, unit='ms', errors='coerce')
+            # DIAGNOSIS STEP
+            self.diagnose_file(df_t, "Trades_Raw")
             
-            # Fallback: String Parsing (02-12-2024)
-            if 'date_dt' not in df_t.columns or df_t['date_dt'].isnull().all():
-                logger.warning("Epoch failed, falling back to String Parsing")
-                df_t['date_dt'] = pd.to_datetime(df_t['time_str'], dayfirst=True, errors='coerce')
+            # 1. Normalize Headers
+            # We create a map of {clean_name: original_name} to find columns safely
+            clean_map = {self._clean_header(c): c for c in df_t.columns}
+            
+            # 2. Smart Column Mapping (Looks for keys in clean_map)
+            # format: 'internal_name': ['possible_external_name1', 'possible_external_name2']
+            target_cols = {
+                'time_str': ['timestamp_ist', 'time', 'date', 'created_time'],
+                'time_epoch': ['timestamp', 'epoch', 'ts'],
+                'account': ['account', 'user', 'wallet'],
+                'pnl': ['closed_pnl', 'pnl', 'realized_pnl', 'profit'],
+                'size': ['size_usd', 'size', 'amount', 'volume'],
+                'leverage': ['leverage', 'lev', 'margin'],
+                'side': ['side', 'direction']
+            }
 
-            # Drop bad dates immediately
+            rename_map = {}
+            for target, search_list in target_cols.items():
+                for search_term in search_list:
+                    if search_term in clean_map:
+                        original = clean_map[search_term]
+                        rename_map[original] = target
+                        break # Stop looking for this target once found
+            
+            df_t.rename(columns=rename_map, inplace=True)
+            
+            # 3. Validation
+            if 'pnl' not in df_t.columns:
+                raise ValueError(f"CRITICAL: Could not find PnL column. Found: {df_t.columns.tolist()}")
+
+            # 4. Date Parsing (The "Safe" Method)
+            # Priority: Epoch (Scientific Notation)
+            if 'time_epoch' in df_t.columns:
+                # Coerce to float to handle "1.73E+12" strings
+                epoch_series = pd.to_numeric(df_t['time_epoch'], errors='coerce')
+                df_t['date_dt'] = pd.to_datetime(epoch_series, unit='ms', errors='coerce')
+            
+            # Fallback: String (Day-First)
+            if 'date_dt' not in df_t.columns or df_t['date_dt'].isnull().all():
+                if 'time_str' in df_t.columns:
+                    df_t['date_dt'] = pd.to_datetime(df_t['time_str'], dayfirst=True, errors='coerce')
+                else:
+                    raise ValueError("CRITICAL: No Date/Timestamp column found.")
+
             df_t = df_t.dropna(subset=['date_dt'])
             
-            # Normalize to Midnight (Critical for Merging)
+            # 5. Clean Numerics
+            for col in ['pnl', 'size', 'leverage']:
+                if col in df_t.columns:
+                    df_t[col] = pd.to_numeric(df_t[col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0.0)
+                elif col == 'leverage':
+                    df_t['leverage'] = 1.0 # Self-Heal missing leverage
+
+            # 6. Aggregation (Fixes Duplicate Keys)
             df_t['date_dt'] = df_t['date_dt'].dt.normalize()
-
-            # 3. Numeric Cleaning & Self-Healing
-            if 'leverage' not in df_t.columns:
-                df_t['leverage'] = 1.0 # Default to Spot
-            
-            df_t['pnl'] = self._to_float(df_t['pnl'])
-            df_t['size'] = self._to_float(df_t['size'])
-            df_t['leverage'] = self._to_float(df_t['leverage'])
             df_t['is_win'] = (df_t['pnl'] > 0).astype(int)
-
-            # 4. Aggregation (Prevents Duplicate Key Errors)
-            # Collapse 1M trades into ~1000 daily summaries
+            
             df_daily = df_t.groupby(['date_dt', 'account']).agg({
                 'pnl': 'sum',
                 'leverage': 'mean',
@@ -76,46 +106,43 @@ class DataLoader:
                 'side': 'count'
             }).reset_index()
 
-            # ======================================================
-            # PHASE 2: SENTIMENT INGESTION (fear_greed_index.csv)
-            # ======================================================
+            # =========================================================
+            # PHASE 2: SENTIMENT
+            # =========================================================
             df_s = pd.read_csv(sentiment_source)
-            df_s.columns = [c.strip().lower() for c in df_s.columns]
+            self.diagnose_file(df_s, "Sentiment_Raw")
             
-            # Map headers
-            s_map = {'date': 'date_dt', 'value': 'fng_val', 'classification': 'regime'}
+            # Normalize headers
+            df_s.columns = [self._clean_header(c) for c in df_s.columns]
+            
+            # Simple Rename
+            s_map = {'date': 'date_dt', 'timestamp': 'date_dt', 'value': 'fng_val', 'classification': 'regime'}
             df_s.rename(columns=s_map, inplace=True)
             
-            # Clean Dates
+            # Parse Date
             df_s['date_dt'] = pd.to_datetime(df_s['date_dt'], errors='coerce')
             df_s = df_s.dropna(subset=['date_dt']).drop_duplicates('date_dt')
 
-            # ======================================================
-            # PHASE 3: FINAL MERGE & SAFETY
-            # ======================================================
-            # Left Join: Keep trade data even if sentiment is missing
+            # =========================================================
+            # PHASE 3: MERGE
+            # =========================================================
             df_final = pd.merge(df_daily, df_s[['date_dt', 'fng_val', 'regime']], on='date_dt', how='left')
-
-            # Impute missing sentiment
+            
+            # Impute
             df_final['fng_val'] = df_final['fng_val'].ffill().bfill().fillna(50)
             df_final['regime'] = df_final['regime'].ffill().bfill().fillna('Neutral')
-
-            # Rename for App Compatibility
-            df_final.rename(columns={
-                'pnl': 'closedPnL', 
-                'regime': 'value_classification', 
-                'fng_val': 'value'
-            }, inplace=True)
-
-            # CRITICAL: ARROW CRASH FIX
-            # Convert Date to String to prevent serialization errors in Streamlit
-            df_final['date_str'] = df_final['date_dt'].dt.strftime('%Y-%m-%d')
-            # Drop the complex datetime object to be safe, or keep it if needed for sorting
-            # We keep 'date_dt' for sorting but ensuring it's clean
             
-            logger.info(f"--- [ETL] Success. Rows: {len(df_final)} ---")
+            # Renaming for App
+            df_final.rename(columns={'pnl': 'closedPnL', 'regime': 'value_classification', 'fng_val': 'value'}, inplace=True)
+            
+            # ARROW FIX: Ensure Date is standard datetime64[ns]
+            df_final['date_dt'] = df_final['date_dt'].astype('datetime64[ns]')
+            
             return df_final
 
         except Exception as e:
-            logger.error(f"FATAL PIPELINE ERROR: {str(e)}")
-            raise RuntimeError(f"Data Processing Failed: {str(e)}")
+            # Capture the full traceback for the UI
+            import traceback
+            st.error(f"PIPELINE CRASHED: {e}")
+            st.code(traceback.format_exc())
+            raise RuntimeError(f"Engine Failed: {e}")
