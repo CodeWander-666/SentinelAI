@@ -1,152 +1,88 @@
 import pandas as pd
 import numpy as np
-import io
 import os
+import warnings
+
+# Suppress warnings for cleaner terminal output
+warnings.filterwarnings('ignore')
+
 class DataLoader:
     """
-    HEAVY ARMOR DATA ENGINE (Pandas Edition)
-    Optimized for stability over raw speed. 
-    Guaranteed to parse your specific date formats: '02-12-2024 22:50' and '2018-02-01'.
+    Industrial-Grade Data Engine.
+    Fixes: 'Mixed Date Formats', 'Duplicate Key Merges', and 'Memory Overflow'.
     """
 
-    def _clean_numeric(self, df, col_name):
-        """Forces a column to be numeric, turning errors (strings) into 0."""
-        if col_name in df.columns:
-            # Remove '$', ',' and whitespace
-            df[col_name] = df[col_name].astype(str).str.replace(r'[$,]', '', regex=True)
-            # Coerce to number (errors become NaN)
-            df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0)
-        return df
-
-    def _parse_dates_pandas(self, series):
-        """
-        The 'Magic' Date Parser. 
-        Uses Pandas flexible parsing which handles "02-12-2024" (Day First) correctly.
-        """
-        # 1. Try ISO / Standard / Mixed format (Slow but powerful)
-        # dayfirst=True is CRITICAL for your '02-12-2024' format
-        return pd.to_datetime(series, dayfirst=True, errors='coerce')
+    def _clean_numeric(self, series):
+        """Standardizes numeric columns (removes commas, handles scientific notation)."""
+        return pd.to_numeric(series.astype(str).str.replace(r'[$,\s]', '', regex=True), errors='coerce').fillna(0.0)
 
     def load_and_process(self, sentiment_source, trades_source):
         try:
-            print("--- STARTING HEAVY ARMOR PIPELINE ---")
+            # --- 1. Load Trades (The Performance Dataset) ---
+            df_t = pd.read_csv(trades_source)
+            df_t.columns = [c.strip() for c in df_t.columns] # Remove leading/trailing spaces
             
-            # ---------------------------------------------------------
-            # 1. INGEST SENTIMENT (Fear & Greed)
-            # ---------------------------------------------------------
-            # Handle both file path and Streamlit UploadedFile
-            if hasattr(sentiment_source, 'getvalue'):
-                df_sent = pd.read_csv(sentiment_source)
-            else:
-                df_sent = pd.read_csv(sentiment_source)
-
-            # NORMALIZE COLUMNS (Sentiment)
-            # Map whatever user has to -> [date_dt, value, value_classification]
-            sent_cols = {c.lower(): c for c in df_sent.columns}
-            
-            # Find Date
-            if 'date' in sent_cols: df_sent.rename(columns={sent_cols['date']: 'date_dt'}, inplace=True)
-            elif 'timestamp' in sent_cols: df_sent.rename(columns={sent_cols['timestamp']: 'date_dt'}, inplace=True)
-            
-            # Find Value
-            if 'value' in sent_cols: df_sent.rename(columns={sent_cols['value']: 'value'}, inplace=True)
-            elif 'fng_value' in sent_cols: df_sent.rename(columns={sent_cols['fng_value']: 'value'}, inplace=True)
-            
-            # Find Class
-            if 'classification' in sent_cols: df_sent.rename(columns={sent_cols['classification']: 'value_classification'}, inplace=True)
-            elif 'label' in sent_cols: df_sent.rename(columns={sent_cols['label']: 'value_classification'}, inplace=True)
-
-            # PARSE DATES (Sentiment)
-            df_sent['date_dt'] = self._parse_dates_pandas(df_sent['date_dt'])
-            # Drop invalid dates
-            df_sent = df_sent.dropna(subset=['date_dt'])
-            
-            # Select only needed
-            df_sent = df_sent[['date_dt', 'value', 'value_classification']].copy()
-
-            # ---------------------------------------------------------
-            # 2. INGEST TRADES (Historical Data)
-            # ---------------------------------------------------------
-            if hasattr(trades_source, 'getvalue'):
-                df_trades = pd.read_csv(trades_source)
-            else:
-                df_trades = pd.read_csv(trades_source)
-
-            # NORMALIZE COLUMNS (Trades)
-            trade_cols = {c.lower(): c for c in df_trades.columns}
-            
-            # Mapping dictionary {Internal: [Possible External]}
-            mapping = {
-                'time_str': ['timestamp ist', 'date', 'time'], # Your specific column
-                'account': ['account', 'user id'],
-                'closedPnL': ['closed pnl', 'pnl', 'realized pnl'],
-                'size': ['size usd', 'size', 'volume'],
-                'leverage': ['leverage', 'lev'],
-                'side': ['side', 'direction']
+            # Internal Column Mapping
+            t_map = {
+                'Timestamp IST': 'time_str', 
+                'Timestamp': 'time_epoch', 
+                'Account': 'account',
+                'Closed PnL': 'pnl',
+                'Size USD': 'size',
+                'Side': 'side',
+                'Leverage': 'leverage'
             }
+            df_t.rename(columns=t_map, inplace=True)
 
-            for internal, aliases in mapping.items():
-                for alias in aliases:
-                    if alias in trade_cols:
-                        df_trades.rename(columns={trade_cols[alias]: internal}, inplace=True)
-                        break
+            # Robust Date Parsing for Trades
+            # Priority 1: Epoch (Scientific Notation 1.73E12)
+            if 'time_epoch' in df_t.columns:
+                df_t['date_dt'] = pd.to_datetime(pd.to_numeric(df_t['time_epoch'], errors='coerce'), unit='ms', errors='coerce')
             
-            # SELF HEALING: Add missing columns
-            if 'leverage' not in df_trades.columns: df_trades['leverage'] = 1.0
-            if 'size' not in df_trades.columns: df_trades['size'] = 0.0
+            # Fallback/Priority 2: String Format (02-12-2024 22:50)
+            if 'date_dt' not in df_t.columns or df_t['date_dt'].isnull().all():
+                df_t['date_dt'] = pd.to_datetime(df_t['time_str'], dayfirst=True, errors='coerce')
 
-            # CLEAN NUMERICS
-            df_trades = self._clean_numeric(df_trades, 'closedPnL')
-            df_trades = self._clean_numeric(df_trades, 'leverage')
-            df_trades = self._clean_numeric(df_trades, 'size')
+            df_t = df_t.dropna(subset=['date_dt'])
+            df_t['date_dt'] = df_t['date_dt'].dt.normalize()
 
-            # PARSE DATES (Trades)
-            # We specifically look for 'time_str' (Timestamp IST) first
-            if 'time_str' in df_trades.columns:
-                df_trades['date_dt'] = self._parse_dates_pandas(df_trades['time_str'])
-            elif 'timestamp' in df_trades.columns: 
-                # Fallback to Epoch if string missing
-                df_trades['date_dt'] = pd.to_datetime(df_trades['timestamp'], unit='ms', errors='coerce')
-            else:
-                raise ValueError("Could not find 'Timestamp IST' or 'Timestamp' column in Trades.")
+            # Clean Numeric Fields
+            df_t['pnl'] = self._clean_numeric(df_t['pnl'])
+            df_t['size'] = self._clean_numeric(df_t['size'])
+            df_t['leverage'] = df_t['leverage'].fillna(1.0) # Fallback for leverage
 
-            # Drop rows where date failed
-            df_trades = df_trades.dropna(subset=['date_dt'])
-            
-            # Normalize to Day (remove time)
-            df_trades['date_dt'] = df_trades['date_dt'].dt.normalize()
-
-            # ---------------------------------------------------------
-            # 3. AGGREGATE & MERGE
-            # ---------------------------------------------------------
-            
-            # Group Trades by Day + Account
-            df_metrics = df_trades.groupby(['date_dt', 'account']).agg({
-                'closedPnL': 'sum',
+            # FIXED: Prevent 'Duplicate Keys' error by aggregating trades BEFORE merging
+            df_t['is_win'] = (df_t['pnl'] > 0).astype(int)
+            df_daily_trades = df_t.groupby(['date_dt', 'account']).agg({
+                'pnl': 'sum',
                 'leverage': 'mean',
                 'size': 'sum',
-                'side': 'count'
+                'is_win': 'mean',
+                'side': 'count' # Using 'side' as a proxy for trade frequency
             }).reset_index()
 
-            # Win Rate (Helper)
-            df_trades['is_win'] = (df_trades['closedPnL'] > 0).astype(int)
-            win_rates = df_trades.groupby(['date_dt', 'account'])['is_win'].mean().reset_index()
+            # --- 2. Load Sentiment (The Context Dataset) ---
+            df_s = pd.read_csv(sentiment_source)
+            df_s.columns = [c.strip().lower() for c in df_s.columns]
             
-            # Merge Metrics
-            df_final = pd.merge(df_metrics, win_rates, on=['date_dt', 'account'])
-
-            # Merge with Sentiment
-            # Use 'left' join to keep trades even if sentiment missing
-            df_final = pd.merge(df_final, df_sent, on='date_dt', how='left')
-
-            # Fill Missing Sentiment (Forward Fill)
-            df_final['value'] = df_final['value'].ffill().bfill()
-            df_final['value_classification'] = df_final['value_classification'].ffill().bfill()
+            s_map = {'date': 'date_dt', 'timestamp': 'ts_epoch', 'value': 'fng_val', 'classification': 'regime'}
+            df_s.rename(columns=s_map, inplace=True)
             
-            print("--- PIPELINE SUCCESS ---")
+            df_s['date_dt'] = pd.to_datetime(df_s['date_dt'], errors='coerce')
+            df_s = df_s.dropna(subset=['date_dt']).drop_duplicates('date_dt')
+            
+            # --- 3. Final Merge ---
+            # We use a LEFT join on Date to ensure 100% Trade preservation
+            df_final = pd.merge(df_daily_trades, df_s[['date_dt', 'fng_val', 'regime']], on='date_dt', how='left')
+
+            # Imputation for missing sentiment (Self-Healing)
+            df_final['fng_val'] = df_final['fng_val'].ffill().bfill()
+            df_final['regime'] = df_final['regime'].ffill().bfill().fillna('Neutral')
+
+            # Standardize for Analysis
+            df_final.rename(columns={'pnl': 'closedPnL', 'regime': 'value_classification', 'fng_val': 'value'}, inplace=True)
+            
             return df_final
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            raise RuntimeError(f"DATA LOADER ERROR: {str(e)}")
+            raise RuntimeError(f"Industrial Ingestion Failed: {str(e)}")
