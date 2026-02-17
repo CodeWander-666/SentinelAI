@@ -1,5 +1,5 @@
 """
-HEAVY ARMOR DATA ENGINE (Polars Edition)
+HEAVY ARMOR DATA ENGINE (Polars Edition) – with robust date parsing and logging.
 Loads, cleans, and merges sentiment and trades data.
 """
 import polars as pl
@@ -27,19 +27,44 @@ class DataLoader:
     @staticmethod
     def _parse_trades_dates(series: pl.Series, col_name: str) -> pl.Series:
         """
-        Parse trades dates:
-        - "Timestamp IST" -> string "%d-%m-%Y %H:%M"
-        - "Timestamp" -> numeric milliseconds
+        Parse trades dates robustly.
+        - If col_name suggests string format (e.g., "Timestamp IST"), try that.
+        - If that yields too many nulls, fall back to numeric milliseconds, then seconds.
         """
-        if col_name == "Timestamp IST":
-            return series.cast(pl.String).str.strptime(
-                pl.Datetime, format="%d-%m-%Y %H:%M", strict=False
-            )
-        elif col_name == "Timestamp":
-            # Convert milliseconds to microseconds (Polars uses µs)
-            return (series.cast(pl.Int64) // 1000).cast(pl.Datetime)
+        # Helper to try numeric parsing (milliseconds first, then seconds)
+        def try_numeric(s: pl.Series) -> pl.Series:
+            numeric = s.cast(pl.Float64, strict=False)
+            # Try milliseconds (assume values are in milliseconds, convert to microseconds)
+            parsed = (numeric // 1000).cast(pl.Int64).cast(pl.Datetime)
+            if parsed.null_count() > len(parsed) / 2:
+                # Try seconds
+                parsed = numeric.cast(pl.Int64).cast(pl.Datetime)
+            return parsed
+
+        # Convert to string for logging (only first few)
+        sample = series.head(5).to_list()
+        logger.info(f"Parsing column '{col_name}' with sample: {sample}")
+
+        # Case 1: likely string format (contains "ist" or explicit name)
+        if "ist" in col_name.lower() or col_name == "Timestamp IST":
+            str_series = series.cast(pl.String)
+            parsed = str_series.str.strptime(pl.Datetime, format="%d-%m-%Y %H:%M", strict=False)
+            # If more than half are null, fallback to numeric
+            if parsed.null_count() > len(parsed) / 2:
+                logger.warning(f"String parsing failed for many rows in '{col_name}', trying numeric...")
+                parsed = try_numeric(series)
+            return parsed
+
+        # Case 2: likely numeric (e.g., "Timestamp")
+        elif col_name.lower() == "timestamp":
+            return try_numeric(series)
+
+        # Fallback: try string, then numeric
         else:
-            return series.cast(pl.String).str.strptime(pl.Datetime, strict=False)
+            parsed = series.cast(pl.String).str.strptime(pl.Datetime, strict=False)
+            if parsed.null_count() > len(parsed) / 2:
+                parsed = try_numeric(series)
+            return parsed
 
     @staticmethod
     def _normalise_columns(df: pl.DataFrame, mapping: dict) -> pl.DataFrame:
@@ -51,6 +76,7 @@ class DataLoader:
                 if alias.lower().strip() in current:
                     rename[current[alias.lower().strip()]] = internal
                     break
+        logger.info(f"Renaming columns: {rename}")
         return df.rename(rename)
 
     @staticmethod
@@ -104,6 +130,8 @@ class DataLoader:
             df = pd.read_csv(source)
             df = pl.from_pandas(df)
 
+        logger.info(f"Sentiment original columns: {df.columns}")
+
         mapping = {
             "date_dt": ["date", "timestamp"],
             "value": ["value", "fng_value"],
@@ -127,6 +155,8 @@ class DataLoader:
         except Exception:
             df = pd.read_csv(source)
             df = pl.from_pandas(df)
+
+        logger.info(f"Trades original columns: {df.columns}")
 
         mapping = {
             "time_str": ["timestamp ist", "date", "time"],
@@ -152,6 +182,7 @@ class DataLoader:
         if not date_cols:
             raise ValueError("No timestamp column found in trades data.")
         ts_col = date_cols[0]
+        logger.info(f"Using timestamp column: {ts_col}")
 
         df = df.with_columns(self._parse_trades_dates(pl.col(ts_col), ts_col).alias("date_dt"))
         df = df.drop_nulls(subset=["date_dt"])
