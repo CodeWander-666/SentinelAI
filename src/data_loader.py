@@ -1,203 +1,189 @@
-import polars as pl
-import pandas as pd
-import logging
-from typing import Union
+"""
+Data Loader Module for SentinelAI.
+Loads and normalizes sentiment and trade CSV files using Polars.
+Handles column name variations, date parsing, and data cleaning.
+"""
 
+import logging
+from typing import Dict, List, Optional
+
+import polars as pl
+
+# Import our custom exceptions
+from src.exceptions import DataLoadError, error_context
+
+# Configure logger
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 
 class DataLoader:
-    """Load and preprocess sentiment and trades data."""
+    """
+    Handles loading and preprocessing of sentiment and trade data.
+    """
 
-    # ----------------------------------------------------------------------
-    # Internal helpers for date parsing
-    # ----------------------------------------------------------------------
-    @staticmethod
-    def _parse_sentiment_dates(series: pl.Series) -> pl.Series:
-        """Parse sentiment dates. Try day‑first format, then fallback."""
-        str_series = series.cast(pl.String)
-        parsed = str_series.str.strptime(pl.Datetime, format="%d-%m-%Y", strict=False)
-        return parsed.fill_null(str_series.str.strptime(pl.Datetime, strict=False))
+    def __init__(self):
+        pass
 
-    @staticmethod
-    def _parse_trades_dates(series: pl.Series, col_name: str) -> pl.Series:
+    # -------------------- Public API --------------------
+
+    def load_and_process(self, sentiment_path: str, trades_path: str) -> pl.DataFrame:
         """
-        Parse trades dates robustly.
-        - If col_name suggests string format (e.g., "Timestamp IST"), try that.
-        - If that yields too many nulls, fall back to numeric milliseconds, then seconds.
+        Load sentiment and trades, merge them, and return a single Polars DataFrame.
+        Returns:
+            Merged Polars DataFrame with columns: date_dt, value, value_classification,
+            trade_price, trade_volume, etc.
         """
-        def try_numeric(s: pl.Series) -> pl.Series:
-            numeric = s.cast(pl.Float64, strict=False)
-            # Try milliseconds (assume values are in milliseconds, convert to microseconds)
-            parsed = (numeric // 1000).cast(pl.Int64).cast(pl.Datetime)
-            if parsed.null_count() > len(parsed) / 2:
-                # Try seconds
-                parsed = numeric.cast(pl.Int64).cast(pl.Datetime)
-            return parsed
-
-        sample = series.head(5).to_list()
-        logger.info(f"Parsing column '{col_name}' with sample: {sample}")
-
-        if "ist" in col_name.lower() or col_name == "Timestamp IST":
-            str_series = series.cast(pl.String)
-            parsed = str_series.str.strptime(pl.Datetime, format="%d-%m-%Y %H:%M", strict=False)
-            if parsed.null_count() > len(parsed) / 2:
-                logger.warning(f"String parsing failed for many rows in '{col_name}', trying numeric...")
-                parsed = try_numeric(series)
-            return parsed
-
-        elif col_name.lower() == "timestamp":
-            return try_numeric(series)
-
-        else:
-            parsed = series.cast(pl.String).str.strptime(pl.Datetime, strict=False)
-            if parsed.null_count() > len(parsed) / 2:
-                parsed = try_numeric(series)
-            return parsed
-
-    @staticmethod
-    def _normalise_columns(df: pl.DataFrame, mapping: dict) -> pl.DataFrame:
-        """Rename columns based on mapping (internal: list of possible external)."""
-        # Clean column names: strip any surrounding whitespace/tabs and lower
-        clean_cols = {col.strip(): col for col in df.columns}
-        rename = {}
-        for internal, aliases in mapping.items():
-            for alias in aliases:
-                for col in clean_cols:
-                    if alias.lower() == col.lower().strip():
-                        rename[clean_cols[col]] = internal
-                        break
-                if internal in rename:
-                    break
-        logger.info(f"Renaming columns: {rename}")
-        return df.rename(rename)
-
-    @staticmethod
-    def _clean_numeric(series: pl.Series) -> pl.Series:
-        """Remove '$', ',' and whitespace, cast to float, fill nulls with 0."""
-        return (series.cast(pl.String)
-                .str.replace_all(r'[\$,]', '')
-                .str.strip_chars()
-                .cast(pl.Float64, strict=False)
-                .fill_null(0.0))
-
-    # ----------------------------------------------------------------------
-    # Main pipeline
-    # ----------------------------------------------------------------------
-    def load_and_process(self,
-                         sentiment_source: Union[str, bytes, object],
-                         trades_source: Union[str, bytes, object]) -> pl.DataFrame:
-        """Load, clean, and merge datasets. Returns Polars DataFrame."""
         try:
-            logger.info("--- STARTING DATA PIPELINE (Polars) ---")
+            with error_context("data pipeline"):
+                logger.info("--- STARTING DATA PIPELINE (Polars) ---")
 
-            df_sent = self._load_sentiment(sentiment_source)
-            logger.info(f"Sentiment loaded: {df_sent.shape}")
+                # Load and normalize sentiment data
+                df_sent = self._load_sentiment(sentiment_path)
+                logger.info(f"Sentiment loaded: {df_sent.shape}")
 
-            df_trades = self._load_trades(trades_source)
-            logger.info(f"Trades loaded: {df_trades.shape}")
+                # Load and normalize trade data
+                df_trades = self._load_trades(trades_path)
+                logger.info(f"Trades loaded: {df_trades.shape}")
 
-            df_agg = self._aggregate_trades(df_trades)
-            logger.info(f"Trades aggregated: {df_agg.shape}")
+                # Merge on date_dt (inner join by default)
+                df_merged = df_sent.join(df_trades, on="date_dt", how="inner")
+                logger.info(f"Merged data shape: {df_merged.shape}")
 
-            df_final = df_agg.join(df_sent, on="date_dt", how="left")
-            df_final = df_final.with_columns([
-                pl.col("value").fill_null(strategy="forward").fill_null(strategy="backward"),
-                pl.col("value_classification").fill_null(strategy="forward").fill_null(strategy="backward"),
-            ])
+                # Optional: sort by date
+                df_merged = df_merged.sort("date_dt")
 
-            logger.info("--- PIPELINE SUCCESS ---")
-            return df_final
+                return df_merged
 
         except Exception as e:
             logger.exception("Fatal error in data pipeline")
-            raise RuntimeError(f"DATA LOADER ERROR: {str(e)}") from e
+            raise DataLoadError(f"Data pipeline failed: {str(e)}") from e
 
-    # ----------------------------------------------------------------------
-    # Private loaders
-    # ----------------------------------------------------------------------
-    def _load_sentiment(self, source) -> pl.DataFrame:
-        # Try reading with tab separator first (since sentiment CSV is tab-separated)
+    # -------------------- Private Loaders --------------------
+
+    def _load_sentiment(self, path: str) -> pl.DataFrame:
+        """
+        Load sentiment CSV and standardize columns.
+        Expected columns: timestamp, value, classification, date (or variations).
+        """
         try:
-            df = pl.read_csv(source, separator='\t', try_parse_dates=False)
-        except Exception:
-            try:
-                df = pl.read_csv(source, try_parse_dates=False)  # auto-detect
-            except Exception:
-                df = pd.read_csv(source)
-                df = pl.from_pandas(df)
+            df = pl.read_csv(path, try_parse_dates=True)
+            logger.info(f"Sentiment original columns: {df.columns}")
 
-        logger.info(f"Sentiment original columns: {df.columns}")
+            # Define mapping: target -> list of possible source columns (in priority order)
+            column_mapping = {
+                "date_dt": ["timestamp", "date", "datetime", "time"],
+                "value": ["value", "fng_value", "sentiment_value", "score"],
+                "value_classification": ["classification", "label", "class", "sentiment_class"],
+            }
 
-        mapping = {
-            "date_dt": ["date", "timestamp"],
-            "value": ["value", "fng_value"],
-            "value_classification": ["classification", "label"],
-        }
-        df = self._normalise_columns(df, mapping)
+            # Normalize columns to our standard names
+            df = self._normalize_columns(df, column_mapping)
 
-        required = ["date_dt", "value", "value_classification"]
-        for col in required:
-            if col not in df.columns:
-                raise ValueError(f"Missing required sentiment column: {col}")
+            # Check that required columns exist after normalization
+            required = ["date_dt", "value", "value_classification"]
+            missing = [col for col in required if col not in df.columns]
+            if missing:
+                raise DataLoadError(f"Missing required sentiment columns after normalization: {missing}")
 
-        df = df.with_columns(self._parse_sentiment_dates(pl.col("date_dt")).alias("date_dt"))
-        df = df.drop_nulls(subset=["date_dt"])
-        df = df.select(["date_dt", "value", "value_classification"])
+            # Parse dates (ensure datetime type)
+            df = df.with_columns(self._parse_dates(pl.col("date_dt")))
+
+            # Clean numeric columns (value might be string with % or other symbols)
+            df = df.with_columns(self._clean_numeric(pl.col("value")).alias("value"))
+
+            # Drop rows with null date_dt
+            df = df.drop_nulls(subset=["date_dt"])
+
+            return df
+
+        except pl.PolarsError as e:
+            raise DataLoadError(f"Failed to read sentiment CSV: {e}") from e
+
+    def _load_trades(self, path: str) -> pl.DataFrame:
+        """
+        Load trades CSV and standardize columns.
+        Expected columns: date, price, volume, etc.
+        """
+        try:
+            df = pl.read_csv(path, try_parse_dates=True)
+            logger.info(f"Trades original columns: {df.columns}")
+
+            # Define mapping for trade data
+            column_mapping = {
+                "date_dt": ["date", "timestamp", "datetime", "trade_date"],
+                "trade_price": ["price", "close", "trade_price", "value"],
+                "trade_volume": ["volume", "vol", "trade_volume", "quantity"],
+            }
+
+            df = self._normalize_columns(df, column_mapping)
+
+            required = ["date_dt", "trade_price"]
+            missing = [col for col in required if col not in df.columns]
+            if missing:
+                raise DataLoadError(f"Missing required trade columns after normalization: {missing}")
+
+            # Parse date
+            df = df.with_columns(self._parse_dates(pl.col("date_dt")))
+
+            # Clean numeric columns
+            if "trade_price" in df.columns:
+                df = df.with_columns(self._clean_numeric(pl.col("trade_price")).alias("trade_price"))
+            if "trade_volume" in df.columns:
+                df = df.with_columns(self._clean_numeric(pl.col("trade_volume")).alias("trade_volume"))
+
+            df = df.drop_nulls(subset=["date_dt"])
+
+            return df
+
+        except pl.PolarsError as e:
+            raise DataLoadError(f"Failed to read trades CSV: {e}") from e
+
+    # -------------------- Helper Methods --------------------
+
+    def _normalize_columns(self, df: pl.DataFrame, mapping: Dict[str, List[str]]) -> pl.DataFrame:
+        """
+        Rename columns based on a mapping of target -> list of possible source names.
+        Only the first existing source column for each target is used.
+        """
+        rename_dict = {}
+        for target, sources in mapping.items():
+            for src in sources:
+                if src in df.columns:
+                    rename_dict[src] = target
+                    break  # Stop after first match
+
+        if rename_dict:
+            logger.info(f"Renaming columns: {rename_dict}")
+            df = df.rename(rename_dict)
+        else:
+            logger.warning("No columns were renamed – none of the source patterns matched.")
+
         return df
 
-    def _load_trades(self, source) -> pl.DataFrame:
-        try:
-            df = pl.read_csv(source, try_parse_dates=False)
-        except Exception:
-            df = pd.read_csv(source)
-            df = pl.from_pandas(df)
-
-        logger.info(f"Trades original columns: {df.columns}")
-
-        mapping = {
-            "time_str": ["timestamp ist", "date", "time"],
-            "account": ["account", "user id"],
-            "closedPnL": ["closed pnl", "pnl", "realized pnl"],
-            "size": ["size usd", "size", "volume"],
-            "leverage": ["leverage", "lev"],
-            "side": ["side", "direction"],
-        }
-        df = self._normalise_columns(df, mapping)
-
-        if "leverage" not in df.columns:
-            df = df.with_columns(pl.lit(1.0).alias("leverage"))
-        if "size" not in df.columns:
-            df = df.with_columns(pl.lit(0.0).alias("size"))
-
-        for col in ["closedPnL", "leverage", "size"]:
-            if col in df.columns:
-                df = df.with_columns(self._clean_numeric(pl.col(col)).alias(col))
-
-        # Determine timestamp column
-        date_cols = [c for c in ["time_str", "timestamp"] if c in df.columns]
-        if not date_cols:
-            raise ValueError("No timestamp column found in trades data.")
-        ts_col = date_cols[0]
-        logger.info(f"Using timestamp column: {ts_col}")
-
-        df = df.with_columns(self._parse_trades_dates(pl.col(ts_col), ts_col).alias("date_dt"))
-        df = df.drop_nulls(subset=["date_dt"])
-        df = df.with_columns(pl.col("date_dt").dt.date().cast(pl.Datetime).alias("date_dt"))
-        return df
-
-    def _aggregate_trades(self, df: pl.DataFrame) -> pl.DataFrame:
-        df = df.with_columns((pl.col("closedPnL") > 0).cast(pl.Int32).alias("is_win"))
-        grouped = df.group_by(["date_dt", "account"]).agg([
-            pl.col("closedPnL").sum().alias("total_pnl"),
-            pl.col("leverage").mean().alias("avg_leverage"),
-            pl.col("size").sum().alias("total_size"),
-            pl.col("side").count().alias("trade_count"),
-            pl.col("is_win").mean().alias("win_rate"),
-            (pl.col("side") == "BUY").sum().alias("long_count"),
-            (pl.col("side") == "SELL").sum().alias("short_count"),
-        ]).with_columns(
-            (pl.col("long_count") / (pl.col("long_count") + pl.col("short_count"))).alias("long_ratio")
+    @staticmethod
+    def _clean_numeric(series: pl.Expr) -> pl.Expr:
+        """
+        Clean numeric columns: remove non-numeric characters and cast to float.
+        """
+        # Remove common non-numeric characters (%, $, commas)
+        return (
+            series.cast(pl.Utf8)
+            .str.replace_all(r"[^\d.-]", "")
+            .cast(pl.Float64)
+            .alias("cleaned")
         )
-        return grouped
+
+    @staticmethod
+    def _parse_dates(date_expr: pl.Expr) -> pl.Expr:
+        """
+        Parse date columns to Polars datetime type.
+        Handles multiple formats gracefully.
+        """
+        return (
+            date_exstr.cast(pl.Utf8)
+            .str.to_datetime(
+                format=None,  # let Polars infer
+                strict=False,  # don't fail on errors
+                time_unit="us"
+            )
+        )
