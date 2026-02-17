@@ -1,72 +1,70 @@
+import polars as pl
 import pandas as pd
-import numpy as np
 import os
+import io
 
 class DataLoader:
-    def load_and_process(self, sentiment_path, trades_path):
+    def load_and_process(self, sentiment_source, trades_source):
         """
-        Loads raw data, standardizes timestamps to daily granularity,
-        and aggregates trade data to account-level metrics.
+        Hyper-fast data loader using Polars for 1GB+ CSVs.
+        Accepts file paths (str) OR file objects (uploaded bytes).
         """
-        # File Existence Check
-        if not os.path.exists(sentiment_path):
-            raise FileNotFoundError(f"Sentiment file not found at: {sentiment_path}")
-        if not os.path.exists(trades_path):
-            raise FileNotFoundError(f"Trades file not found at: {trades_path}")
-
         try:
-            # 1. Load Data
-            df_sent = pd.read_csv(sentiment_path)
-            df_trades = pd.read_csv(trades_path)
-
-            # 2. Date Standardization
-            # Ensure 'Date' column exists or find closest match
-            if 'Date' in df_sent.columns:
-                df_sent['date_dt'] = pd.to_datetime(df_sent['Date'], errors='coerce')
+            # --- 1. Load Sentiment (Small file, can use standard load) ---
+            # Polars handles both paths and file-like objects seamlessly
+            if isinstance(sentiment_source, str):
+                lf_sent = pl.scan_csv(sentiment_source)
             else:
-                raise KeyError("Sentiment CSV missing 'Date' column")
+                lf_sent = pl.read_csv(sentiment_source).lazy()
 
-            # Handle trade timestamps (assuming 'time' column exists)
-            if 'time' in df_trades.columns:
-                # Convert logic handles both unix and string formats
-                df_trades['time'] = pd.to_datetime(df_trades['time'], errors='coerce')
-                df_trades['date_dt'] = df_trades['time'].dt.floor('D')
+            # Process Sentiment: Rename Date -> date_dt, Cast types
+            lf_sent = (
+                lf_sent
+                .with_columns(pl.col("Date").str.strptime(pl.Date, "%d-%m-%Y", strict=False).alias("date_dt"))
+                .drop_nulls(subset=["date_dt"])
+                .select(["date_dt", "value", "value_classification"])
+            )
+
+            # --- 2. Load Trades (THE HUGE FILE) ---
+            # LazyFrame allows us to process 1GB+ without crashing RAM
+            if isinstance(trades_source, str):
+                lf_trades = pl.scan_csv(trades_source)
             else:
-                raise KeyError("Trades CSV missing 'time' column")
+                lf_trades = pl.read_csv(trades_source).lazy()
 
-            # Drop rows where date conversion failed
-            df_sent.dropna(subset=['date_dt'], inplace=True)
-            df_trades.dropna(subset=['date_dt'], inplace=True)
+            # Process Trades: Parse timestamps, floor to date, aggregate
+            # We aggregate IN POLARS (Rust) before bringing data to Python
+            lf_metrics = (
+                lf_trades
+                .with_columns(
+                    pl.col("time").str.to_datetime(time_unit="us", strict=False).dt.date().alias("date_dt")
+                )
+                .drop_nulls(subset=["date_dt"])
+                .group_by(["date_dt", "account"])
+                .agg([
+                    pl.col("closedPnL").sum().cast(pl.Float32),
+                    pl.col("leverage").mean().cast(pl.Float32),
+                    pl.col("size").sum().cast(pl.Float32),
+                    pl.col("side").count().alias("trade_count"),
+                    (pl.col("closedPnL") > 0).mean().alias("win_rate").cast(pl.Float32)
+                ])
+            )
 
-            # 3. Aggregate Trades (Daily Metrics per Account)
-            # We aggregate first to avoid row explosion during merge
-            daily_metrics = df_trades.groupby(['date_dt', 'account']).agg({
-                'closedPnL': 'sum',
-                'leverage': 'mean',
-                'size': 'sum',        # Total Volume
-                'side': 'count'       # Trade Frequency
-            }).reset_index()
+            # --- 3. Merge (Join) ---
+            # Left join trades with sentiment
+            lf_final = lf_metrics.join(lf_sent, on="date_dt", how="left")
 
-            # Calculate Win Rate separately
-            df_trades['is_win'] = (df_trades['closedPnL'] > 0).astype(int)
-            win_rates = df_trades.groupby(['date_dt', 'account'])['is_win'].mean().reset_index()
+            # --- 4. Collect ---
+            # Only NOW do we load data into RAM (but it's already aggregated and tiny!)
+            df_final = lf_final.collect().to_pandas()
 
-            # Merge Aggregations
-            df_features = pd.merge(daily_metrics, win_rates, on=['date_dt', 'account'])
-
-            # 4. Merge with Market Sentiment
-            # Left join ensures we keep trade data even if sentiment is missing for a day
-            df_final = pd.merge(df_features, df_sent[['date_dt', 'value', 'value_classification']], 
-                                on='date_dt', how='left')
-
-            # Handle missing sentiment values (Forward Fill)
+            # Final cleanup in Pandas (Date conversion for plotting)
+            df_final['date_dt'] = pd.to_datetime(df_final['date_dt'])
             df_final['value'] = df_final['value'].ffill()
             df_final['value_classification'] = df_final['value_classification'].ffill()
             
-            # Final cleanup
-            df_final.dropna(subset=['value'], inplace=True)
-            
-            return df_final
+            return df_final.dropna(subset=['value'])
 
         except Exception as e:
-            raise RuntimeError(f"Data processing failed: {str(e)}")
+            # Fallback for debug
+            raise RuntimeError(f"Polars Engine Error: {str(e)}")
