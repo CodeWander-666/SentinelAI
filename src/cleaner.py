@@ -11,7 +11,7 @@ class DataCleaner:
     def clean_financial_data(self, df):
         # 1. Date Standardization
         if 'date_dt' in df.columns:
-            # Handle Scientific Notation
+            # Handle Scientific Notation (1.73E+12)
             if df['date_dt'].astype(str).str.contains('E').any():
                 df['date_dt'] = pd.to_datetime(pd.to_numeric(df['date_dt'], errors='coerce'), unit='ms', errors='coerce')
             else:
@@ -27,16 +27,16 @@ class DataCleaner:
                     errors='coerce'
                 ).fillna(0.0)
 
-        # 3. Leverage Injection (Part A Requirement)
+        # 3. Leverage Injection
         if 'leverage' not in df.columns:
             df['leverage'] = 1.0
 
-        # 4. Outlier Handling (Part A Requirement)
+        # 4. Outlier Handling (Soft Cap for Charts)
         if 'closedPnL' in df.columns:
             Q1 = df['closedPnL'].quantile(0.25)
             Q3 = df['closedPnL'].quantile(0.75)
             IQR = Q3 - Q1
-            # Cap at 5x IQR to keep whales but remove glitch data
+            # Cap extreme outliers at 5x IQR to keep charts readable
             df['closedPnL'] = df['closedPnL'].clip(lower=Q1 - 5*IQR, upper=Q3 + 5*IQR)
 
         return df
