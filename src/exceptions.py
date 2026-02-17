@@ -2,6 +2,13 @@
 Custom exceptions for the application.
 """
 
+from typing import Optional
+import logging
+from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
+
+
 class SentinelAIError(Exception):
     """Base exception for all application errors."""
     def __init__(self, message: str, original: Optional[Exception] = None):
@@ -28,12 +35,6 @@ class UIError(SentinelAIError):
     """Raised for UI state or widget errors."""
     pass
 
-
-# Context manager for error handling (can be reused)
-from contextlib import contextmanager
-import logging
-
-logger = logging.getLogger(__name__)
 
 @contextmanager
 def error_context(context: str):
