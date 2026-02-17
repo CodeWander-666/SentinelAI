@@ -6,10 +6,10 @@ from src.data_loader import DataLoader
 from src.utils import PipelineTracker
 from src.models import ModelEngine
 
-# --- APP CONFIG ---
-st.set_page_config(page_title="SentinelAI Pro", layout="wide", page_icon="🦅")
 
-# --- TRADER THEME CSS ---
+st.set_page_config(page_title="SentinelAI ", layout="wide", page_icon="AI")
+
+
 st.markdown("""
 <style>
     /* Dark Mode Global */
@@ -44,8 +44,8 @@ if 'df' not in st.session_state: st.session_state.df = None
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("🦅 SENTINEL PRO")
-    st.caption("Quantitative Trading Intelligence")
+    st.title(" SENTINEL AI")
+    st.caption("Trader Performance vs Market Sentiment")
     st.divider()
     
     source = st.radio("DATA SOURCE", ["Repository", "Manual Upload"], index=1)
@@ -91,7 +91,7 @@ if st.session_state.df is not None:
 
     # 2. MAIN TABS
     tab_perf, tab_edge, tab_data, tab_ai = st.tabs([
-        "📈 PERFORMANCE", "🧠 SENTIMENT EDGE", "📋 TRADE JOURNAL", "🤖 AI STRATEGY"
+        " PERFORMANCE", " SENTIMENT EDGE", " TRADE JOURNAL", " AI STRATEGY"
     ])
 
     # TAB 1: PERFORMANCE (The Trader View)
@@ -160,7 +160,7 @@ if st.session_state.df is not None:
             st.plotly_chart(fig_clus, use_container_width=True)
             
         with col_txt:
-            st.info("### 🛡️ RISK PROTOCOL")
+            st.info("###  RISK PROTOCOL")
             fear_pnl = df[df['value_classification']=='Fear']['closedPnL'].mean()
             if fear_pnl < 0:
                 st.write("**Condition:** Negative Expectancy during FEAR.")
@@ -169,7 +169,7 @@ if st.session_state.df is not None:
                 st.write("**Condition:** Stable performance in all regimes.")
                 st.write("**Action:** Maintain standard sizing.")
                 
-            st.success("### 🚀 ALPHA SIGNAL")
+            st.success("###  ALPHA SIGNAL")
             st.write("**Observation:** High leverage clusters correlate with higher volatility but not necessarily higher Sharpes.")
             st.write("**Action:** Cap leverage at 3x for consistent compounding.")
 
