@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import os
 from src.data_loader import DataLoader
 from src.analytics import Analyzer
 from src.models import ModelEngine
@@ -9,7 +10,8 @@ from src.models import ModelEngine
 st.set_page_config(
     page_title="PrimeTrade Analytics",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    page_icon="⚡"
 )
 
 # Custom CSS for Professional Look
@@ -26,19 +28,24 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Initialization ---
+# --- Initialization & Caching ---
+# We use cache_data so the cloud app doesn't reload CSVs on every click
 @st.cache_data
-def load_data():
+def get_data():
     dl = DataLoader()
-    # Ensure these paths match your local setup or Docker container
-    return dl.load_and_process('data/sentiment.csv', 'data/trades.csv')
+    # Robust path handling for Streamlit Cloud
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    sent_path = os.path.join(base_dir, 'data', 'sentiment.csv')
+    trade_path = os.path.join(base_dir, 'data', 'trades.csv')
+    
+    return dl.load_and_process(sent_path, trade_path)
 
 try:
-    df = load_data()
+    df = get_data()
     analyzer = Analyzer()
     engine = ModelEngine()
 except Exception as e:
-    st.error(f"System Error: Failed to load data. {e}")
+    st.error(f"System Error: Failed to load data. Please ensure 'data/sentiment.csv' and 'data/trades.csv' exist in the repo. Error: {e}")
     st.stop()
 
 # --- Sidebar Controls ---
@@ -70,7 +77,6 @@ col_left, col_right = st.columns(2)
 
 with col_left:
     st.subheader("Performance by Regime")
-    # T-Test Logic
     ttest_res = analyzer.compare_regimes(df)
     
     if ttest_res['status'] == 'success':
@@ -123,7 +129,6 @@ if st.button("Run K-Means Clustering"):
 st.markdown("---")
 st.subheader("Automated Strategy Recommendations")
 
-# Logic-based recommendations
 avg_lev_fear = df[df['value_classification']=='Fear']['leverage'].mean()
 avg_lev_greed = df[df['value_classification']=='Greed']['leverage'].mean()
 
