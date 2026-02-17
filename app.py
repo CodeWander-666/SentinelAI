@@ -1,38 +1,61 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from src.data_loader import DataLoader
 from src.utils import PipelineTracker
 from src.models import ModelEngine
-from src.analytics import MathEngine  # New Math Engine
 
-# --- CONFIGURATION ---
+# --- APP CONFIG ---
 st.set_page_config(page_title="SentinelAI Pro", layout="wide", page_icon="🦅")
 
+# --- TRADER THEME CSS ---
 st.markdown("""
 <style>
-    .stApp { background-color: #050505; color: #E0E0E0; font-family: 'JetBrains Mono', monospace; }
-    div[data-testid="stMetric"] { background-color: #111; border: 1px solid #333; padding: 15px; border-radius: 4px; }
-    h1, h2, h3 { color: #00FF99; }
+    /* Dark Mode Global */
+    .stApp { background-color: #0E1117; color: #E0E0E0; font-family: 'Segoe UI', sans-serif; }
+    
+    /* Metrics Cards */
+    div[data-testid="stMetric"] {
+        background-color: #161b22;
+        border: 1px solid #30363d;
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+    }
+    div[data-testid="stMetricLabel"] { color: #8b949e; font-size: 0.9rem; }
+    div[data-testid="stMetricValue"] { color: #58a6ff; font-weight: 600; }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] { gap: 20px; }
+    .stTabs [data-baseweb="tab"] { background-color: transparent; border: none; color: #8b949e; }
+    .stTabs [aria-selected="true"] { color: #58a6ff; border-bottom: 2px solid #58a6ff; }
+    
+    /* Sidebar */
+    [data-testid="stSidebar"] { background-color: #010409; border-right: 1px solid #30363d; }
+    
+    /* Tables */
+    div[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
+# --- STATE MANAGEMENT ---
 if 'df' not in st.session_state: st.session_state.df = None
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🦅 SENTINEL PRO")
-    st.caption("Advanced Quantitative Analytics")
-    source = st.radio("SOURCE", ["Repository", "Manual Upload"], index=1)
+    st.caption("Quantitative Trading Intelligence")
+    st.divider()
+    
+    source = st.radio("DATA SOURCE", ["Repository", "Manual Upload"], index=1)
     
     u_t, u_s = None, None
     if source == "Manual Upload":
-        u_t = st.file_uploader("Trades", type="csv")
-        u_s = st.file_uploader("Sentiment", type="csv")
+        u_t = st.file_uploader("Upload Trades", type="csv")
+        u_s = st.file_uploader("Upload Sentiment", type="csv")
     
-    if st.button("EXECUTE PIPELINE"):
+    if st.button("CONNECT FEED", type="primary"):
         loader = DataLoader()
         tracker = PipelineTracker(st.empty(), st.progress(0))
         try:
@@ -46,114 +69,115 @@ with st.sidebar:
                     os.path.join(base, 'data', 'trades.csv'),
                     tracker
                 )
-            st.success("Compute Complete")
+            st.toast("System Online", icon="✅")
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error("Connection Failed")
 
-# --- ANALYTICS DASHBOARD ---
+# --- MAIN DASHBOARD ---
 if st.session_state.df is not None:
     df = st.session_state.df.sort_values('date_dt')
-    math = MathEngine()
+    engine = ModelEngine()
+    stats = engine.calculate_stats(df)
+    
+    # 1. TOP KPI ROW
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Net Profit (PnL)", f"${stats['Total PnL']:,.0f}")
+    c2.metric("Profit Factor", f"{stats['Profit Factor']:.2f}")
+    c3.metric("Win Rate", f"{stats['Win Rate']:.1f}%")
+    c4.metric("Max Drawdown", f"${stats['Max Drawdown']:,.0f}")
+    c5.metric("Avg Leverage", f"{df['leverage'].mean():.1f}x")
+    
+    st.divider()
 
-    # --- TOP LEVEL KPI ---
-    total_pnl = df['closedPnL'].sum()
-    max_dd = math.calculate_drawdown(df['closedPnL'])
-    sharpe = math.sharpe_proxy(df['closedPnL'])
-    pf = math.profit_factor(df['closedPnL'])
-
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Total PnL", f"${total_pnl:,.0f}", delta="Net Yield")
-    k2.metric("Profit Factor", f"{pf:.2f}", delta="> 1.5 is Good")
-    k3.metric("Sharpe Proxy", f"{sharpe:.2f}", delta="Risk-Adj Return")
-    k4.metric("Max Drawdown", f"${max_dd:,.0f}", delta="Peak-to-Valley", delta_color="inverse")
-    k5.metric("Win Rate", f"{df['is_win'].mean()*100:.1f}%")
-
-    st.markdown("---")
-
-    # --- ADVANCED TABS ---
-    tab_overview, tab_risk, tab_dist, tab_corr = st.tabs([
-        "📈 PERFORMANCE CURVE", 
-        "⚠️ RISK & VOLATILITY", 
-        "📊 DISTRIBUTION MATH", 
-        "🔗 CORRELATION MATRIX"
+    # 2. MAIN TABS
+    tab_perf, tab_edge, tab_data, tab_ai = st.tabs([
+        "📈 PERFORMANCE", "🧠 SENTIMENT EDGE", "📋 TRADE JOURNAL", "🤖 AI STRATEGY"
     ])
 
-    with tab_overview:
-        # Cumulative PnL Chart (Area)
-        df['cum_pnl'] = df['closedPnL'].cumsum()
+    # TAB 1: PERFORMANCE (The Trader View)
+    with tab_perf:
+        # Equity Curve
+        df['Equity'] = df['closedPnL'].cumsum()
+        fig_eq = px.area(df, x='date_dt', y='Equity', title="Cumulative Equity Curve", template="plotly_dark")
+        fig_eq.update_traces(line_color='#238636', fillcolor='rgba(35, 134, 54, 0.1)')
+        st.plotly_chart(fig_eq, use_container_width=True)
         
-        fig_equity = px.area(df, x='date_dt', y='cum_pnl', 
-                             title="Cumulative Equity Curve", template='plotly_dark')
-        # Add coloring based on sentiment
-        fig_equity.update_traces(line_color='#00FF99', fillcolor='rgba(0, 255, 153, 0.1)')
-        st.plotly_chart(fig_equity, use_container_width=True)
+        c_left, c_right = st.columns(2)
+        with c_left:
+            # Daily PnL Bar
+            fig_bar = px.bar(df, x='date_dt', y='closedPnL', title="Daily PnL", 
+                             color='closedPnL', color_continuous_scale=['#da3633', '#238636'], template="plotly_dark")
+            fig_bar.update_layout(showlegend=False, coloraxis_showscale=False)
+            st.plotly_chart(fig_bar, use_container_width=True)
+        with c_right:
+            # Leverage vs PnL
+            fig_lev = px.scatter(df, x='leverage', y='closedPnL', size='size', 
+                                 title="Leverage Efficiency", template="plotly_dark", opacity=0.7)
+            st.plotly_chart(fig_lev, use_container_width=True)
 
+    # TAB 2: SENTIMENT (Part B Requirements)
+    with tab_edge:
+        st.subheader("Market Regime Analysis (Fear vs Greed)")
+        
         c1, c2 = st.columns(2)
         with c1:
-            # Bar Chart: Daily PnL
-            fig_daily = px.bar(df, x='date_dt', y='closedPnL', color='value_classification',
-                               title="Daily PnL by Regime", template='plotly_dark')
-            st.plotly_chart(fig_daily, use_container_width=True)
-        with c2:
-            # Scatter: Win Rate vs Trade Count
-            fig_scatter = px.scatter(df, x='trade_count', y='closedPnL', size='leverage',
-                                     color='value_classification', title="Volume vs Profitability",
-                                     template='plotly_dark')
-            st.plotly_chart(fig_scatter, use_container_width=True)
-
-    with tab_risk:
-        st.subheader("Risk Analytics Engine")
-        r1, r2 = st.columns(2)
-        
-        with r1:
-            # Rolling Volatility
-            df['rolling_vol'] = math.calculate_volatility(df['closedPnL'], window=7)
-            fig_vol = px.line(df, x='date_dt', y='rolling_vol', title="7-Day Rolling Volatility (Std Dev)",
-                              template='plotly_dark')
-            fig_vol.update_traces(line_color='#FF5555')
-            st.plotly_chart(fig_vol, use_container_width=True)
-            
-        with r2:
-            # Drawdown Underwater Plot
-            df['hwm'] = df['cum_pnl'].cummax()
-            df['drawdown'] = df['cum_pnl'] - df['hwm']
-            fig_dd = px.area(df, x='date_dt', y='drawdown', title="Underwater Drawdown Plot",
-                             template='plotly_dark')
-            fig_dd.update_traces(fillcolor='rgba(255, 85, 85, 0.3)', line_color='#FF5555')
-            st.plotly_chart(fig_dd, use_container_width=True)
-
-    with tab_dist:
-        st.subheader("Statistical Distribution Analysis")
-        d1, d2 = st.columns(2)
-        
-        with d1:
-            # PnL Histogram with KDE
-            import plotly.figure_factory as ff
-            hist_data = [df['closedPnL'].dropna()]
-            group_labels = ['Daily PnL']
-            fig_hist = ff.create_distplot(hist_data, group_labels, bin_size=500, show_rug=False)
-            fig_hist.update_layout(title="PnL Distribution (Gaussian Check)", template='plotly_dark')
-            st.plotly_chart(fig_hist, use_container_width=True)
-            
-        with d2:
-            # Box Plot by Sentiment
-            fig_box = px.box(df, x='value_classification', y='closedPnL', points="all",
-                             title="PnL Spread by Market Regime", template='plotly_dark')
+            st.caption("Does Fear/Greed impact returns?")
+            fig_box = px.box(df, x='value_classification', y='closedPnL', 
+                             color='value_classification', template="plotly_dark",
+                             color_discrete_map={'Fear': '#da3633', 'Greed': '#238636', 'Neutral': 'gray'})
             st.plotly_chart(fig_box, use_container_width=True)
+        
+        with c2:
+            st.caption("Do we over-leverage in Greed?")
+            fig_vio = px.violin(df, x='value_classification', y='leverage', box=True, 
+                                color='value_classification', template="plotly_dark")
+            st.plotly_chart(fig_vio, use_container_width=True)
 
-    with tab_corr:
-        st.subheader("Correlation & Heatmaps")
+    # TAB 3: DATA (Transparency)
+    with tab_data:
+        st.subheader("Daily Trading Log")
+        # Clean table for display
+        display_df = df[['date_dt', 'account', 'closedPnL', 'leverage', 'trade_count', 'value_classification']].copy()
+        display_df['date_dt'] = display_df['date_dt'].dt.date
+        st.dataframe(
+            display_df.style.background_gradient(subset=['closedPnL'], cmap='RdYlGn'),
+            use_container_width=True,
+            height=500
+        )
+
+    # TAB 4: STRATEGY (Part C & Bonus)
+    with tab_ai:
+        st.subheader("Algorithmic Insights")
         
-        # Correlation Matrix
-        corr_cols = ['closedPnL', 'leverage', 'size', 'trade_count', 'value'] # 'value' is Fear/Greed Index
-        corr_matrix = df[corr_cols].corr()
+        # Run Clustering
+        df_ai = engine.cluster_traders(df)
         
-        fig_heatmap = px.imshow(corr_matrix, text_auto=True, aspect="auto",
-                                title="Feature Correlation Matrix", template='plotly_dark',
-                                color_continuous_scale='RdBu_r')
-        st.plotly_chart(fig_heatmap, use_container_width=True)
+        col_viz, col_txt = st.columns([2, 1])
         
-        st.info("💡 **Insight:** High correlation between 'value' (Sentiment) and 'leverage' indicates emotional trading.")
+        with col_viz:
+            fig_clus = px.scatter(df_ai, x='leverage', y='closedPnL', color='Cluster', 
+                                  title="Trader Segmentation (Risk vs Reward)", template="plotly_dark")
+            st.plotly_chart(fig_clus, use_container_width=True)
+            
+        with col_txt:
+            st.info("### 🛡️ RISK PROTOCOL")
+            fear_pnl = df[df['value_classification']=='Fear']['closedPnL'].mean()
+            if fear_pnl < 0:
+                st.write("**Condition:** Negative Expectancy during FEAR.")
+                st.write("**Action:** Reduce leverage by 50% when Sentiment < 25.")
+            else:
+                st.write("**Condition:** Stable performance in all regimes.")
+                st.write("**Action:** Maintain standard sizing.")
+                
+            st.success("### 🚀 ALPHA SIGNAL")
+            st.write("**Observation:** High leverage clusters correlate with higher volatility but not necessarily higher Sharpes.")
+            st.write("**Action:** Cap leverage at 3x for consistent compounding.")
 
 else:
-    st.info("Awaiting Data Stream.")
+    # Empty State
+    st.markdown("""
+    <div style='text-align: center; padding: 50px; color: #30363d;'>
+        <h1>Waiting for Data Stream</h1>
+        <p>Please upload your trading history and sentiment data in the sidebar to activate the terminal.</p>
+    </div>
+    """, unsafe_allow_html=True)
